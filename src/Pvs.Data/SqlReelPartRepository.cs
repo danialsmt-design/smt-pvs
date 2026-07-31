@@ -259,6 +259,39 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         return result;
     }
 
+    public async Task<IReadOnlyList<IssuedReel>> GetIssuedReelsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default)
+    {
+        var list = new List<IssuedReel>();
+        if (string.IsNullOrWhiteSpace(lotNo)) return list;
+        string sideList = side?.Trim().ToUpperInvariant() switch
+        {
+            "A" => "'A Side','Full'",
+            "B" => "'B Side','Full'",
+            _   => "'A Side','B Side','Full'"
+        };
+        // One row per issued reel (PartUID) for this lot/side/line. StockOuts.Model holds the lot no. (LIKE handles
+        // the occasional " | "-joined two-lot rows). Take the latest qty per UID (ID DESC) in case a reel re-issued.
+        string sql =
+            $@"SELECT Part, Uid, Qty FROM (
+                 SELECT LTRIM(RTRIM(ISNULL(PartNumber,''))) AS Part,
+                        LTRIM(RTRIM(ISNULL(PartUID,'')))    AS Uid,
+                        ISNULL(Quantity,0)                  AS Qty,
+                        ROW_NUMBER() OVER (PARTITION BY LTRIM(RTRIM(ISNULL(PartUID,''))) ORDER BY ID DESC) AS rn
+                 FROM StockOuts
+                 WHERE Model LIKE @lot
+                   AND LTRIM(RTRIM(ISNULL(Line,''))) = CAST(@line AS nvarchar(10))
+                   AND LTRIM(RTRIM(ISNULL(Side,''))) IN ({sideList})
+               ) t WHERE rn = 1 AND Uid <> ''";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@lot", "%" + (lotNo ?? string.Empty).Trim() + "%");
+        cmd.Parameters.AddWithValue("@line", line);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new IssuedReel(r.GetString(0).Trim(), r.GetString(1).Trim(), r.IsDBNull(2) ? 0 : Convert.ToInt32(r.GetValue(2))));
+        return list;
+    }
+
     public async Task<LotOrder?> GetNextDeliveryLotAsync(string model, string side, int line, CancellationToken ct = default)
     {
         // Next lot to run = the earliest Planned (un-delivered) DeliveryDocuments order (PONumber == LotNo)

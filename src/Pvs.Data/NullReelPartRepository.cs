@@ -36,6 +36,9 @@ public sealed class NullReelPartRepository : IReelPartRepository
     public Task<IReadOnlyDictionary<string, int>> GetIssuedForLotAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>());
 
+    public Task<IReadOnlyList<IssuedReel>> GetIssuedReelsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<IssuedReel>>(Array.Empty<IssuedReel>());
+
     public Task<LotOrder?> GetNextDeliveryLotAsync(string model, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<LotOrder?>(null);
 

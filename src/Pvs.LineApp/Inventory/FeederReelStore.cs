@@ -46,6 +46,12 @@ public sealed class FeederReelStore
         lock (_gate) { return _map.Values.Where(r => r.Machine == machine).ToList(); }
     }
 
+    /// <summary>Every reel currently remembered on any feeder (for the "issued but not loaded" staged view).</summary>
+    public IReadOnlyList<FeederReel> All()
+    {
+        lock (_gate) { return _map.Values.ToList(); }
+    }
+
     private void Load()
     {
         try

@@ -228,6 +228,35 @@ app.MapGet("/api/exhaust", (LineService line) =>
     });
 });
 
+// Reels ISSUED (StockOuts) for this line's current lot but NOT yet loaded on a machine — staged / waiting to go on.
+// The exhaust forecast only shows loaded reels; this shows the ones on the shelf so the operator/planner can see
+// what's ready vs what still has to be requested. issued − currently-loaded UIDs.
+app.MapGet("/api/staged", (LineService line) =>
+{
+    var coord = line.Coordinator;
+    var issued = coord?.LotIssuedReels() ?? (IReadOnlyList<Pvs.Core.Data.IssuedReel>)Array.Empty<Pvs.Core.Data.IssuedReel>();
+    var loadedUids = new HashSet<string>(line.Reels.All().Select(r => (r.Uid ?? "").Trim()), StringComparer.OrdinalIgnoreCase);
+    var staged = issued.Where(r => !loadedUids.Contains((r.Uid ?? "").Trim())).ToList();
+    var parts = staged.GroupBy(r => r.PartNumber, StringComparer.OrdinalIgnoreCase)
+        .Select(g => new
+        {
+            part = g.Key,
+            reels = g.Count(),
+            qty = g.Sum(x => x.Qty),
+            uids = g.OrderByDescending(x => x.Qty).Select(x => new { uid = x.Uid, qty = x.Qty }).ToList()
+        })
+        .OrderByDescending(p => p.qty).ThenBy(p => p.part).ToList();
+    return Results.Ok(new
+    {
+        lotNo = coord?.CurrentLotNo,
+        issuedReels = issued.Count,
+        loadedReels = loadedUids.Count,
+        stagedReels = staged.Count,
+        stagedQty = staged.Sum(r => r.Qty),
+        parts
+    });
+});
+
 // Manually re-baseline the live inventory from the confirmed reels (feeds the exhaust forecast).
 app.MapPost("/api/exhaust/refresh", async (LineService line) =>
 {

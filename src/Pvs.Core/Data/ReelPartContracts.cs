@@ -24,6 +24,9 @@ public sealed record CurrentLot(string Model, string Side, string LotNo = "");
 /// <summary>A delivery order/lot from DeliveryDocuments — its PONumber (lot number), target qty and delivery date.</summary>
 public sealed record LotOrder(string PoNumber, int Target, DateTime? DeliveryDate);
 
+/// <summary>One reel issued (StockOuts) for a lot: part number, reel UID, quantity.</summary>
+public sealed record IssuedReel(string PartNumber, string Uid, int Qty);
+
 /// <summary>A production-count row to append to DailyProductionCount (Quantity is a CHILD-BOARD count).</summary>
 public sealed record ProductionCountEntry(
     string Date, string StartTime, string EndTime, string Model, string Side,
@@ -83,6 +86,10 @@ public interface IReelPartRepository
     /// is needed, which has lead time). StockOuts.Model holds the lot/PO number (sometimes two joined by " | ").
     /// </summary>
     Task<IReadOnlyDictionary<string, int>> GetIssuedForLotAsync(string lotNo, string side, int line, CancellationToken ct = default);
+
+    /// <summary>Individual reels ISSUED (StockOuts) for a lot + side + line — part, reel UID, qty. Lets the app
+    /// show which issued reels are staged but not yet loaded on a machine (issued − currently-loaded UIDs).</summary>
+    Task<IReadOnlyList<IssuedReel>> GetIssuedReelsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default);
 
     /// <summary>
     /// The next lot to run for a model+side+line — the earliest Planned (un-delivered) DeliveryDocuments

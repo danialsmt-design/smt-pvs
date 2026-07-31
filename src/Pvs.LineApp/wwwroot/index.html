@@ -89,6 +89,11 @@
     <div class="empty" id="exhEmpty" style="display:none">No tracked reels yet — run a shift or model-change check. / ရီးလ်မှတ်တမ်းမရှိသေး — ဆစ်ဖ်ပြောင်း သို့ မော်ဒယ်ပြောင်း စစ်ဆေးပါ.</div>
   </div>
 
+  <div class="card" id="stagedCard" style="display:none">
+    <h2>📥 Issued, not yet on machine / ထုတ်ပြီး စက်မတင်ရသေး <small id="stagedHint" style="color:var(--mut);font-weight:400;font-size:13px"></small></h2>
+    <div class="exhlist" id="staged"></div>
+  </div>
+
   <div class="card" id="verifyCard">
     <h2>Verification status</h2>
     <div class="vbtns" id="verifyBtns"></div>
@@ -229,6 +234,25 @@ async function refresh(){
       exd.innerHTML = html;
       const more = Math.max(0, rows.length - n);
       document.getElementById('exhHint').textContent = rows.length? (`next ${n} of ${rows.length}${more?` · +${more} more`:''}`):'';
+    }catch(e){}
+
+    // staged reels — issued for the lot but NOT yet loaded on a machine (the forecast can't show these)
+    try{
+      const sg = await (await fetch('/api/staged')).json();
+      const card = document.getElementById('stagedCard');
+      const parts = sg.parts||[];
+      if(!parts.length){ card.style.display='none'; }
+      else{
+        card.style.display='block';
+        document.getElementById('stagedHint').textContent =
+          `${sg.stagedReels} reel${sg.stagedReels>1?'s':''} · ${Number(sg.stagedQty).toLocaleString()} pcs waiting`;
+        document.getElementById('staged').innerHTML = parts.map(p=>{
+          const uids = p.uids.map(u=>`${u.uid} (${Number(u.qty).toLocaleString()})`).join(' · ');
+          return `<div class="exrow"><div class="rnk">${p.reels}×</div>
+            <div><div class="prt">${p.part}</div><div class="loc">${uids}</div></div>
+            <div class="r"><div class="q">${Number(p.qty).toLocaleString()} pcs</div></div></div>`;
+        }).join('');
+      }
     }catch(e){}
 
     const ev = await (await fetch('/api/events')).json();

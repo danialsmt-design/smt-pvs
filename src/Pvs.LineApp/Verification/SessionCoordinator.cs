@@ -92,6 +92,7 @@ public sealed class SessionCoordinator : IDisposable
     // Material coverage: pieces ISSUED (StockOuts) per part for the current lot/side — to warn when the issued
     // reels won't cover the whole lot (a re-request is needed, which has lead time). Refreshed on change + on a timer.
     private readonly Dictionary<string, int> _lotIssued = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Pvs.Core.Data.IssuedReel> _lotIssuedReels = new();   // individual issued reels (for the staged view)
     // DailyProductionCount writer: PVS appends an incremental board-count row every 30 min (config-gated).
     private long _m4PanelsTotal;          // monotonic panels off the last machine (never reset) — DPC increment source
     private long _dpcWrittenPanels;       // panels already written to DailyProductionCount
@@ -908,13 +909,25 @@ public sealed class SessionCoordinator : IDisposable
     {
         string lot, side; int line = _config.LineId;
         lock (_gate) { lot = _currentLotNo; side = Side ?? ""; }
-        if (string.IsNullOrWhiteSpace(lot)) { lock (_gate) _lotIssued.Clear(); return; }
+        if (string.IsNullOrWhiteSpace(lot)) { lock (_gate) { _lotIssued.Clear(); _lotIssuedReels.Clear(); } return; }
         try
         {
-            var issued = await _repo.GetIssuedForLotAsync(lot, side, line, ct);
-            lock (_gate) { _lotIssued.Clear(); foreach (var kv in issued) _lotIssued[kv.Key] = kv.Value; }
+            var reels = await _repo.GetIssuedReelsForLotAsync(lot, side, line, ct);   // one query -> reel list + per-part sum
+            lock (_gate)
+            {
+                _lotIssuedReels.Clear(); _lotIssuedReels.AddRange(reels);
+                _lotIssued.Clear();
+                foreach (var g in reels.GroupBy(r => r.PartNumber, StringComparer.OrdinalIgnoreCase))
+                    _lotIssued[g.Key] = g.Sum(x => x.Qty);
+            }
         }
         catch (Exception ex) { _log.LogDebug(ex, "Lot coverage refresh failed (kept last)."); }
+    }
+
+    /// <summary>Individual reels issued for the current lot/side (cached) — for the "issued but not loaded" view.</summary>
+    public IReadOnlyList<Pvs.Core.Data.IssuedReel> LotIssuedReels()
+    {
+        lock (_gate) return _lotIssuedReels.ToList();
     }
 
     /// <summary>Per-part pieces issued (StockOuts) for the current lot/side — feeds the material-coverage warning.</summary>
