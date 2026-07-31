@@ -84,7 +84,9 @@ public sealed class MachineChannel
         _reportBuf.Clear();
         _collectingReport = true;
         _reportStart = now;
-        _send(SonyFrame.Build("C1M000"));
+        // Format is C1M + mmm(000 = read w/o clear) + P + <PWB dataname>. Whole-machine status = empty dataname
+        // after the P separator. (Fig.7-9 of the SI-E2000 manual shows the P is part of the command structure.)
+        _send(SonyFrame.Build("C1M000P"));
     }
 
     /// <summary>Feed a chunk of received characters (e.g. from SerialPort.ReadExisting()).</summary>

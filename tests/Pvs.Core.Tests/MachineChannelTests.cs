@@ -120,7 +120,7 @@ public class MachineChannelTests
     {
         var (ch, sent) = Make();
         ch.RequestProductionCount(T0);
-        Assert.Contains(sent, s => s.Contains("C1M000"));
+        Assert.Contains(sent, s => s.Contains("C1M000P"));
     }
 
     [Fact]
