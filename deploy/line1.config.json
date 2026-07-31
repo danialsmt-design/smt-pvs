@@ -31,5 +31,5 @@
   "badge": { "uidPrefix": "9999" },
 
   "syncStockOuts": true,          // Line 1: balances trusted, writing live remaining to StockOuts.Quantity
-  "writeProductionCount": false   // still off (needs pvs_ro INSERT grant + operator app to stop writing L1 DPC)
+  "writeProductionCount": true    // Line 1: PVS is the DPC writer (operator app stopped 2026-07-31); 5-min buckets per lot/side
 }

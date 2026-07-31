@@ -158,6 +158,26 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         return string.IsNullOrWhiteSpace(model) ? null : new CurrentLot(model, r.GetString(1), r.GetString(2));
     }
 
+    public async Task<int> GetProducedBoardsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(lotNo)) return 0;
+        string s = (side ?? "").Trim();
+        // DailyProductionCount stores the lot in LotNo and Side as 'A'/'B'. Match side by first letter (empty = all).
+        string sql =
+            @"SELECT ISNULL(SUM(ISNULL(Quantity,0)),0)
+              FROM DailyProductionCount
+              WHERE LTRIM(RTRIM(ISNULL(LotNo,''))) = LTRIM(RTRIM(@lot))
+                AND LTRIM(RTRIM(Line)) = CAST(@line AS nvarchar(10))" +
+            (s.Length == 0 ? "" : " AND UPPER(LEFT(LTRIM(ISNULL(Side,'')),1)) = UPPER(@side)");
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@lot", lotNo.Trim());
+        cmd.Parameters.AddWithValue("@line", line);
+        if (s.Length > 0) cmd.Parameters.AddWithValue("@side", s.Substring(0, 1));
+        var v = await cmd.ExecuteScalarAsync(ct);
+        return v is null || v is DBNull ? 0 : Convert.ToInt32(v);
+    }
+
     public async Task<IReadOnlyList<ProductionRun>> GetDailyProductionAsync(string line, string date, CancellationToken ct = default)
     {
         // DailyProductionCount stores Date as 'yyyy-MM-dd' and Line as a plain string ("1"). StartTime =

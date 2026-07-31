@@ -115,6 +115,13 @@ public interface IReelPartRepository
     Task<IReadOnlyList<ProductionRun>> GetDailyProductionAsync(string line, string date, CancellationToken ct = default);
 
     /// <summary>
+    /// Total boards already recorded in DailyProductionCount for a lot/side/line (SUM of Quantity) — used when
+    /// PVS takes over as the writer mid-lot, to seed its bucket without double-counting whatever is already logged.
+    /// Side matches on first letter ("A"/"B"); empty side sums all sides of the lot.
+    /// </summary>
+    Task<int> GetProducedBoardsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default);
+
+    /// <summary>
     /// Feeder placement counts (ProductBOM) for a model name + running side ("A"/"B") + line — the daily
     /// feeder-usage reconciliation multiplies these by boards produced. Side resolves to 'A Side'/'B Side'
     /// (plus 'Full', which applies to both). Returns machine + supply position + part + per-board count.

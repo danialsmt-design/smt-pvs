@@ -94,11 +94,12 @@ public sealed class SessionCoordinator : IDisposable
     // reels won't cover the whole lot (a re-request is needed, which has lead time). Refreshed on change + on a timer.
     private readonly Dictionary<string, int> _lotIssued = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Pvs.Core.Data.IssuedReel> _lotIssuedReels = new();   // individual issued reels (for the staged view)
-    // DailyProductionCount writer: PVS appends an incremental board-count row every 30 min (config-gated).
-    private long _m4PanelsTotal;          // monotonic panels off the last machine (never reset) — DPC increment source
-    private long _dpcWrittenPanels;       // panels already written to DailyProductionCount
-    private DateTime _dpcWindowStart;     // start of the current unwritten window (default = no open window)
-    private string _dpcLot = "", _dpcModel = "", _dpcSide = "";  // context captured when the window opened
+    // DailyProductionCount writer: when enabled, PVS is the line's production-count source and appends an
+    // incremental board-count row every 5 min. Boards are bucketed by the (lot,model,side) they were produced
+    // under — one DB row per bucket per window — so a changeover mid-window never misattributes boards, and
+    // enabling the flag only writes boards produced FROM THEN ON (not the whole monotonic history).
+    private long _m4PanelsTotal;          // monotonic panels off the last machine (never reset) — lot-count anchor base
+    private readonly Dictionary<DpcKey, DpcBucket> _dpcPending = new();   // unwritten panels, keyed by production context
     private readonly HashSet<string> _shiftTriggerDone = new();   // shift keys whose shift-change trigger has fired or been satisfied
     private readonly Pvs.Core.Shifts.ShiftSchedule _shifts;
 
@@ -159,9 +160,10 @@ public sealed class SessionCoordinator : IDisposable
         // mirror those balances to StockOuts.Quantity in the DB.
         _syncTimer = new System.Threading.Timer(_ => { _ = RecordAndSyncAsync(); }, null,
             TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5));
-        // Every 30 min: when enabled, append PVS's incremental board count to DailyProductionCount.
+        // Every 5 min: when enabled, append PVS's incremental board count to DailyProductionCount (one row per
+        // lot/model/side produced in the window). PVS is the line's production-count source when this is on.
         _dpcTimer = new System.Threading.Timer(_ => { _ = FlushProductionCountAsync(); }, null,
-            TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+            TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
         // One-shot ~8s after start (model restored from cache by then): baseline the live inventory so the exhaust
         // forecast is NEVER empty after a restart/changeover — it pulls each loaded reel's remaining from the DB by
         // UID (authoritative), no manual refresh or check needed. Fixes "exhaust not showing" after a restart.
@@ -169,6 +171,8 @@ public sealed class SessionCoordinator : IDisposable
         {
             try { if (Model is not null) await RefreshInventoryAsync(); }
             catch (Exception ex) { _log.LogDebug(ex, "Startup inventory baseline failed."); }
+            try { await SeedDpcForCurrentLotAsync(); }
+            catch (Exception ex) { _log.LogDebug(ex, "DPC seed failed."); }
         }, null, TimeSpan.FromSeconds(8), System.Threading.Timeout.InfiniteTimeSpan);
     }
 
@@ -600,10 +604,14 @@ public sealed class SessionCoordinator : IDisposable
         {
             // Monotonic M4 total (the lot count is DERIVED from this: LotPanels = total - anchor).
             _m4PanelsTotal++;
-            if (_dpcWindowStart == default)
+            // Bucket this panel under the lot/model/side it was produced under (for the DPC writer). Only when
+            // there IS a lot+model context — boards produced before a lot is selected aren't attributable.
+            string lot = _currentLotNo, model = Model?.Name ?? "";
+            if (!string.IsNullOrWhiteSpace(lot) && !string.IsNullOrWhiteSpace(model))
             {
-                _dpcWindowStart = DateTime.Now;
-                _dpcLot = _currentLotNo; _dpcModel = Model?.Name ?? ""; _dpcSide = Side ?? "";
+                var key = new DpcKey(lot, model, Side ?? "");
+                if (!_dpcPending.TryGetValue(key, out var b)) b = new DpcBucket(0, DateTime.Now);
+                _dpcPending[key] = b with { Panels = b.Panels + 1 };
             }
         }
         // Persist the monotonic total every board so the derived lot count is restart-accurate to the last board.
@@ -611,14 +619,21 @@ public sealed class SessionCoordinator : IDisposable
     }
 
     // ---- DailyProductionCount writer (PVS as the line's production-count source; config-gated) ----
-    private sealed record DpcStateData(long M4PanelsTotal, long WrittenPanels);
+    // A production context (what a bucket of produced panels belongs to) and its running panel count.
+    private readonly record struct DpcKey(string Lot, string Model, string Side);
+    private sealed record DpcBucket(long Panels, DateTime FirstAt);
+    private sealed record DpcBucketRow(string Lot, string Model, string Side, long Panels, DateTime FirstAt);
+    private sealed record DpcStateData(long M4PanelsTotal, List<DpcBucketRow>? Pending = null);
     private static string DpcStatePath => System.IO.Path.Combine(AppContext.BaseDirectory, "dpc-state.json");
     private static string DpcShift(DateTime t) =>
         t.TimeOfDay >= new TimeSpan(7, 35, 0) && t.TimeOfDay < new TimeSpan(19, 35, 0) ? "Morning" : "Night";
 
     private void SaveDpcState()
     {
-        DpcStateData d; lock (_gate) d = new DpcStateData(_m4PanelsTotal, _dpcWrittenPanels);
+        DpcStateData d;
+        lock (_gate)
+            d = new DpcStateData(_m4PanelsTotal,
+                _dpcPending.Select(kv => new DpcBucketRow(kv.Key.Lot, kv.Key.Model, kv.Key.Side, kv.Value.Panels, kv.Value.FirstAt)).ToList());
         try { System.IO.File.WriteAllText(DpcStatePath, System.Text.Json.JsonSerializer.Serialize(d)); }
         catch (Exception ex) { _log.LogDebug(ex, "DPC state save failed."); }
     }
@@ -630,45 +645,94 @@ public sealed class SessionCoordinator : IDisposable
             if (!System.IO.File.Exists(DpcStatePath)) return;
             var d = System.Text.Json.JsonSerializer.Deserialize<DpcStateData>(
                 System.IO.File.ReadAllText(DpcStatePath), new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            if (d is not null) { _m4PanelsTotal = d.M4PanelsTotal; _dpcWrittenPanels = d.WrittenPanels; }
+            if (d is null) return;
+            _m4PanelsTotal = d.M4PanelsTotal;
+            _dpcPending.Clear();
+            foreach (var r in d.Pending ?? new())            // older state files (no Pending) migrate with empty buckets
+                _dpcPending[new DpcKey(r.Lot, r.Model, r.Side)] = new DpcBucket(r.Panels, r.FirstAt);
         }
         catch (Exception ex) { _log.LogDebug(ex, "DPC state load failed."); }
     }
 
     /// <summary>
-    /// Appends one incremental DailyProductionCount row for the boards produced since the last write (config-gated
-    /// by WriteProductionCount). Quantity = new panels × per-panel (child boards). Attributed to the window's
-    /// captured lot/model/side and the shift at write time. Skips when nothing was produced this window.
+    /// Appends DailyProductionCount rows for the boards produced since the last write (config-gated by
+    /// WriteProductionCount) — one row per (lot,model,side) bucket, Quantity = panels × per-panel boards,
+    /// StartTime = when that bucket's first board landed, attributed to the shift at write time. A bucket is
+    /// cleared only after its row is confirmed written, so a DB failure just retries next window (no loss, no
+    /// double-write). Nothing to flush -> no-op.
     /// </summary>
     public async Task FlushProductionCountAsync(CancellationToken ct = default)
     {
         if (!_config.WriteProductionCount) return;
-        long pending; DateTime winStart, winEnd = DateTime.Now;
-        string lot, model, side;
+        DateTime winEnd = DateTime.Now;
+        List<(DpcKey Key, DpcBucket B)> buckets;
+        lock (_gate) buckets = _dpcPending.Where(kv => kv.Value.Panels > 0).Select(kv => (kv.Key, kv.Value)).ToList();
+
+        foreach (var (key, b) in buckets)
+        {
+            if (string.IsNullOrWhiteSpace(key.Lot) || string.IsNullOrWhiteSpace(key.Model)) continue;
+            int boards = (int)(b.Panels * _config.PanelBoardsFor(key.Model));
+            if (boards <= 0) continue;
+            var entry = new ProductionCountEntry(
+                winEnd.ToString("yyyy-MM-dd"), b.FirstAt.ToString("HH:mm:ss"), winEnd.ToString("HH:mm:ss"),
+                key.Model, key.Side, boards, _config.LineId.ToString(), key.Lot, DpcShift(winEnd), "PVS (auto)", "PVS", Guid.NewGuid().ToString());
+            try
+            {
+                int rows = await _repo.InsertProductionCountAsync(entry, ct);
+                if (rows > 0)
+                {
+                    // Subtract exactly what we wrote; boards produced during the write stay for the next flush.
+                    lock (_gate)
+                    {
+                        if (_dpcPending.TryGetValue(key, out var cur))
+                        {
+                            long left = cur.Panels - b.Panels;
+                            if (left > 0) _dpcPending[key] = cur with { Panels = left, FirstAt = winEnd };
+                            else _dpcPending.Remove(key);
+                        }
+                    }
+                    SaveDpcState();
+                    _log.LogInformation("DPC row: line {Line} {Shift} {Lot} {Model}/{Side} +{Boards} boards.",
+                        _config.LineId, DpcShift(winEnd), key.Lot, key.Model, key.Side, boards);
+                }
+            }
+            catch (Exception ex) { _log.LogWarning(ex, "DailyProductionCount write failed (kept for retry)."); }
+        }
+    }
+
+    /// <summary>
+    /// One-shot at startup (when PVS is the DPC writer): if the current lot already has boards produced that are
+    /// NOT yet reflected in DailyProductionCount, seed the pending bucket with the difference so the first flush
+    /// includes them. Guards against double-counting by subtracting whatever DPC already holds for this lot/side
+    /// (operator-app rows or PVS's own earlier writes) and whatever is already in the bucket. Idempotent.
+    /// </summary>
+    public async Task SeedDpcForCurrentLotAsync(CancellationToken ct = default)
+    {
+        if (!_config.WriteProductionCount) return;
+        string lot, model, side; int perPanel; long lotPanels;
         lock (_gate)
         {
-            pending = _m4PanelsTotal - _dpcWrittenPanels;
-            winStart = _dpcWindowStart == default ? winEnd : _dpcWindowStart;
-            lot = _dpcLot; model = _dpcModel; side = _dpcSide;
+            lot = _currentLotNo; model = Model?.Name ?? ""; side = Side ?? "";
+            if (string.IsNullOrWhiteSpace(lot) || string.IsNullOrWhiteSpace(model)) return;
+            perPanel = _config.PanelBoardsFor(model);
+            lotPanels = (_lotCountFor == _currentLotNo) ? Math.Max(0, _m4PanelsTotal - _lotAnchorTotal) : 0;
         }
-        if (pending <= 0) return;                                   // nothing produced this window
-        if (string.IsNullOrWhiteSpace(lot) || string.IsNullOrWhiteSpace(model)) return;
-        int boards = (int)(pending * _config.PanelBoardsFor(model));
-        var entry = new ProductionCountEntry(
-            winEnd.ToString("yyyy-MM-dd"), winStart.ToString("HH:mm:ss"), winEnd.ToString("HH:mm:ss"),
-            model, side, boards, _config.LineId.ToString(), lot, DpcShift(winEnd), "PVS (auto)", "PVS", Guid.NewGuid().ToString());
-        try
+        if (lotPanels <= 0 || perPanel <= 0) return;
+        int recordedBoards = await _repo.GetProducedBoardsForLotAsync(lot, side, _config.LineId, ct);
+        long recordedPanels = recordedBoards / perPanel;             // floor: partial panel stays owed
+        long desiredUnwritten = Math.Max(0, lotPanels - recordedPanels);
+        lock (_gate)
         {
-            int rows = await _repo.InsertProductionCountAsync(entry, ct);
-            if (rows > 0)
+            var key = new DpcKey(lot, model, side);
+            long have = _dpcPending.TryGetValue(key, out var b) ? b.Panels : 0;
+            if (desiredUnwritten > have)
             {
-                lock (_gate) { _dpcWrittenPanels = _m4PanelsTotal; _dpcWindowStart = default; _dpcLot = ""; _dpcModel = ""; _dpcSide = ""; }
-                SaveDpcState();
-                _log.LogInformation("DPC row: line {Line} {Shift} {Lot} {Model}/{Side} +{Boards} boards.",
-                    _config.LineId, DpcShift(winEnd), lot, model, side, boards);
+                _dpcPending[key] = new DpcBucket(desiredUnwritten, b?.FirstAt ?? DateTime.Now);
+                _log.LogInformation("DPC seed: lot {Lot} {Model}/{Side} produced {Prod}p, recorded {Rec}p -> bucket {Seed}p.",
+                    lot, model, side, lotPanels, recordedPanels, desiredUnwritten);
             }
         }
-        catch (Exception ex) { _log.LogWarning(ex, "DailyProductionCount write failed (pvs_ro INSERT grant?)."); }
+        SaveDpcState();
     }
 
     private void SaveLotProgress()

@@ -51,6 +51,9 @@ public sealed class NullReelPartRepository : IReelPartRepository
     public Task<IReadOnlyList<ProductionRun>> GetDailyProductionAsync(string line, string date, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<ProductionRun>>(Array.Empty<ProductionRun>());
 
+    public Task<int> GetProducedBoardsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
+        Task.FromResult(0);
+
     public Task<IReadOnlyList<BomFeederUse>> GetBomUsageAsync(string model, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<BomFeederUse>>(Array.Empty<BomFeederUse>());
 
