@@ -63,6 +63,7 @@ public sealed class SessionCoordinator : IDisposable
     private readonly System.Threading.Timer _autoModelTimer;
     private readonly System.Threading.Timer _syncTimer;
     private readonly System.Threading.Timer _dpcTimer;
+    private readonly System.Threading.Timer _startupTimer;   // one-shot: baseline the inventory ~8s after start
     private bool _autoModel;
     private string? _lastAutoLot;   // last production lot key we auto-switched to (so a manual override isn't clobbered)
     private string _currentLotNo = "";   // current production lot number (PONumber) — tags records (esp. consumed reels)
@@ -161,6 +162,14 @@ public sealed class SessionCoordinator : IDisposable
         // Every 30 min: when enabled, append PVS's incremental board count to DailyProductionCount.
         _dpcTimer = new System.Threading.Timer(_ => { _ = FlushProductionCountAsync(); }, null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+        // One-shot ~8s after start (model restored from cache by then): baseline the live inventory so the exhaust
+        // forecast is NEVER empty after a restart/changeover — it pulls each loaded reel's remaining from the DB by
+        // UID (authoritative), no manual refresh or check needed. Fixes "exhaust not showing" after a restart.
+        _startupTimer = new System.Threading.Timer(async _ =>
+        {
+            try { if (Model is not null) await RefreshInventoryAsync(); }
+            catch (Exception ex) { _log.LogDebug(ex, "Startup inventory baseline failed."); }
+        }, null, TimeSpan.FromSeconds(8), System.Threading.Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>True when the current model was auto-detected from the production system (not manually picked).</summary>
@@ -1061,14 +1070,18 @@ public sealed class SessionCoordinator : IDisposable
 
             var reel = _reels.Get(f.Machine, f.Feeder);
             if (reel is null || string.IsNullOrWhiteSpace(reel.Uid)) continue;
-            // Current remaining comes from the LOCAL record (matched by reel UID). StockOuts (issued qty)
-            // only seeds a brand-new reel that isn't recorded locally yet — wrapped so one failed lookup
-            // (flaky link) doesn't abort the whole baseline.
-            var loc = _remaining.Get(f.Machine, f.Feeder);
-            int? qty;
-            if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
-                qty = loc.Remaining;
-            else { try { qty = await _repo.FindStockOutQtyAsync(reel.Uid, f.Part, ct); } catch { qty = null; } }
+            // Remaining is UID-tracked in the DB (StockOuts.Quantity, kept current — verified == live remaining, not
+            // the issued full qty), so pull it from the DB by UID as the AUTHORITATIVE source: a restart or a wiped
+            // local file still restores the correct balance. The local record is the fallback if the DB has no row /
+            // the link is down. (Wrapped so one failed lookup doesn't abort the whole baseline.)
+            int? qty = null;
+            try { qty = await _repo.FindStockOutQtyAsync(reel.Uid, f.Part, ct); } catch { qty = null; }
+            if (qty is null)
+            {
+                var loc = _remaining.Get(f.Machine, f.Feeder);
+                if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
+                    qty = loc.Remaining;
+            }
             if (qty is int q && q > 0) ch.Inventory.LoadReel(f.Feeder, reel.Uid, q);
         }
         _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeders (source={Src}).", model.Name, side, feeders.Count, fromDb ? "DB" : "cache");
@@ -1741,5 +1754,5 @@ public sealed class SessionCoordinator : IDisposable
     // will parse the qty out of the scanned UID once the barcode format is confirmed.
     private static int? QtyFromUid(string? uid) => null;
 
-    public void Dispose() { _housekeeping.Dispose(); _autoModelTimer.Dispose(); _syncTimer.Dispose(); _dpcTimer.Dispose(); }
+    public void Dispose() { _housekeeping.Dispose(); _autoModelTimer.Dispose(); _syncTimer.Dispose(); _dpcTimer.Dispose(); _startupTimer.Dispose(); }
 }
