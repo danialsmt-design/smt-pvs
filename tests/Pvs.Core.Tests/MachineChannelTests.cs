@@ -112,4 +112,64 @@ public class MachineChannelTests
         ch.Feed(Frame("A2"), T0);   // an incoming A2 must not trigger an outgoing ack
         Assert.Empty(sent);
     }
+
+    // ---- C1M production-report (machine's own completed-PWB counter) ----
+
+    [Fact]
+    public void RequestProductionCount_sends_C1M000()
+    {
+        var (ch, sent) = Make();
+        ch.RequestProductionCount(T0);
+        Assert.Contains(sent, s => s.Contains("C1M000"));
+    }
+
+    [Fact]
+    public void C1M_report_is_collected_acked_with_A0_and_PC_is_parsed()
+    {
+        var (ch, sent) = Make();
+        int? read = null; ch.ProductionCountRead += v => read = v;
+
+        ch.RequestProductionCount(T0);
+        sent.Clear();   // ignore the C1M send; focus on the reply acking
+        // machine streams the report as D0 lines...
+        ch.Feed(Frame("D0SD2607311230"), T0);
+        ch.Feed(Frame("D0ED2607311300"), T0);
+        ch.Feed(Frame("D0PC00000300VC00000312TC00000310"), T0);
+        ch.Feed(Frame("D0"), T0);   // terminator
+
+        Assert.Equal(300, ch.CompletedPwbs);
+        Assert.Equal(300, read);
+        // each report line acked with A0 (not A2); the transfer closed with A2
+        Assert.True(sent.Count(s => s.Contains("A0")) >= 3);
+        Assert.Contains(sent, s => s.Contains("A2"));
+    }
+
+    [Fact]
+    public void Board_completes_during_a_C1M_report_still_count_and_ack_normally()
+    {
+        var (ch, sent) = Make();
+        int boards = 0; ch.BoardCompleted += _ => boards++;
+
+        ch.RequestProductionCount(T0);
+        ch.Feed(Frame("D0SD2607311230"), T0);       // report line -> A0
+        ch.Feed(Frame("R0CT"), T0.AddSeconds(1));   // a real board-complete DURING the report
+        ch.Feed(Frame("D0PC00000300"), T0.AddSeconds(1));
+        ch.Feed(Frame("D0"), T0.AddSeconds(1));     // terminator
+
+        Assert.Equal(1, boards);                    // the board still counted
+        Assert.Contains(sent, s => s.Contains("A2"));   // the real-time R0 was A2-acked as usual
+        Assert.Equal(300, ch.CompletedPwbs);
+    }
+
+    [Fact]
+    public void A_stalled_C1M_report_times_out_and_reverts_to_normal_acking()
+    {
+        var (ch, sent) = Make();
+        ch.RequestProductionCount(T0);
+        ch.Feed(Frame("D0PC00000300"), T0);           // partial report (no terminator)
+        sent.Clear();
+        ch.Feed(Frame("R0CT"), T0.AddSeconds(9));      // >8s later: collection has timed out
+        Assert.Contains(sent, s => s.Contains("A2"));  // back to normal A2 acking
+        Assert.Equal(300, ch.CompletedPwbs);           // salvaged the count that had arrived
+    }
 }

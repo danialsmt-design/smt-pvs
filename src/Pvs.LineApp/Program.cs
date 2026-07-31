@@ -257,6 +257,28 @@ app.MapGet("/api/staged", (LineService line) =>
     });
 });
 
+// The machine's OWN completed-PWB counter, read live via the Sony C1M production report (authoritative;
+// survives PVS being off). POST triggers a fresh read (optionally for one ?machine=N), waits for the serial
+// reports to stream back, and returns the counts. Read-only on the machine (C1M000 does NOT clear).
+app.MapPost("/api/machinecount", async (LineService line, int? machine) =>
+{
+    var now = DateTime.Now;
+    var targets = line.Listeners.Where(l => machine is null || l.Channel.Machine == machine).ToList();
+    foreach (var l in targets) l.Channel.RequestProductionCount(now);
+    await Task.Delay(2000);   // let the C1M report(s) stream back over serial
+    return Results.Ok(new
+    {
+        readAt = DateTime.Now,
+        machines = targets.Select(l => new
+        {
+            machine = l.Channel.Machine,
+            completedPwbs = l.Channel.CompletedPwbs,
+            at = l.Channel.CompletedPwbsAt == default ? (DateTime?)null : l.Channel.CompletedPwbsAt,
+            online = l.Channel.IsOnline
+        }).ToList()
+    });
+});
+
 // Manually re-baseline the live inventory from the confirmed reels (feeds the exhaust forecast).
 app.MapPost("/api/exhaust/refresh", async (LineService line) =>
 {

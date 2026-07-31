@@ -59,6 +59,34 @@ public sealed class MachineChannel
     /// </summary>
     public void RequestProgram() => _send(SonyFrame.Build("C3P"));
 
+    /// <summary>The machine's own "Number of Completed PWBs" (the <c>PC</c> field of its C1M Production Report) —
+    /// its authoritative board counter, which keeps counting even while PVS is off. Null until first read.</summary>
+    public int? CompletedPwbs { get; private set; }
+    /// <summary>When <see cref="CompletedPwbs"/> was last read from the machine.</summary>
+    public DateTime CompletedPwbsAt { get; private set; }
+    /// <summary>Raised when a fresh completed-PWB count is read from the machine via C1M.</summary>
+    public event Action<int>? ProductionCountRead;
+
+    private bool _collectingReport;
+    private readonly System.Text.StringBuilder _reportBuf = new();
+    private DateTime _reportStart;
+
+    /// <summary>
+    /// Ask the machine for its Production Report (<c>C1M000</c> — read WITHOUT clearing) to read PC = completed
+    /// PWBs. The reply streams back as ASCII <c>D0</c> lines which we accumulate and ack with <c>A0</c> (the
+    /// report protocol) until the empty-<c>D0</c> terminator; the parsed count lands in
+    /// <see cref="CompletedPwbs"/> and fires <see cref="ProductionCountRead"/>. Isolated: only D0 report-line
+    /// acking changes while a report is in flight — real-time parts-out / board-complete handling is untouched —
+    /// and it times out after 8s so a stalled transfer reverts to normal.
+    /// </summary>
+    public void RequestProductionCount(DateTime now)
+    {
+        _reportBuf.Clear();
+        _collectingReport = true;
+        _reportStart = now;
+        _send(SonyFrame.Build("C1M000"));
+    }
+
     /// <summary>Feed a chunk of received characters (e.g. from SerialPort.ReadExisting()).</summary>
     public void Feed(string chunk, DateTime now)
     {
@@ -76,6 +104,36 @@ public sealed class MachineChannel
 
     private void Handle(SonyMessage msg, DateTime now)
     {
+        // --- C1M production-report collection (isolated) ---
+        // While a report streams in, its D0 lines are report DATA: accumulate and ack with A0 (the report
+        // protocol), NOT the usual A2, until the terminator (an empty D0). Only D0 report-line acking changes;
+        // real-time R messages (parts-out / board-complete) still flow through the normal path below, so the
+        // safety functions are untouched. Times out after 8s so a stalled/failed transfer reverts to normal.
+        if (_collectingReport)
+        {
+            bool timedOut = (now - _reportStart) > TimeSpan.FromSeconds(8);
+            if (!timedOut && msg.Payload.StartsWith("D0", StringComparison.Ordinal))
+            {
+                string data = msg.Payload.Length > 2 ? msg.Payload[2..] : string.Empty;
+                if (data.Length == 0)   // terminator: finalize, ack the end (A0) then close the transfer (A2)
+                {
+                    var pc = SonyProductionReport.CompletedPwbs(_reportBuf.ToString());
+                    _collectingReport = false;
+                    _send(SonyFrame.Build("A0"));
+                    _send(SonyFrame.Build("A2"));
+                    if (pc is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
+                }
+                else { _reportBuf.Append(data); _send(SonyFrame.Build("A0")); }
+                return;   // report line handled — skip normal processing / A2 ack
+            }
+            if (timedOut)   // salvage whatever arrived (PC is early in the report), then process this msg normally
+            {
+                var pc = SonyProductionReport.CompletedPwbs(_reportBuf.ToString());
+                if (pc is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
+                _collectingReport = false;
+            }
+        }
+
         MessageReceived?.Invoke(msg, now);
 
         // C3P reply: the loaded production program name arrives as a D0 data message. The extension is
