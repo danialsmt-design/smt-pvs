@@ -177,4 +177,53 @@ public class ModelChangeSessionTests
         Assert.Equal(StepOutcome.Ok, r.ScanBadge(Sup).Outcome);        // supervisor clears after restore
         Assert.Equal(ModelChangeState.Scanning, r.State);
     }
+
+    // ---- SyncFeeders: mid-check ProductBOM amendment flows into the live checklist ----
+
+    [Fact]
+    public void SyncFeeders_keeps_unchanged_scans_resets_the_amended_one_and_resumes_there()
+    {
+        var s = TwoFeeders();   // 115 = R0402-10K, 116 = C0603-100N
+        s.ScanBadge(Op);
+        s.ScanReel("R0402-10K", "u1"); s.SetScannedQty(1200); s.ConfirmQty();   // 115 done -> on 116
+
+        // BOM amended mid-check: feeder 116's part changes; 115 unchanged.
+        var step = s.SyncFeeders(new[] { (2, 115, "R0402-10K"), (2, 116, "C0603-999X") });
+
+        Assert.Equal(StepOutcome.Ok, step.Outcome);
+        Assert.Equal(FeederCheckStatus.Matched, s.Items[0].PartStatus);   // 115 kept its pass
+        Assert.Equal(QtyOutcome.Confirmed, s.Items[0].QtyOutcome);
+        Assert.Equal(FeederCheckStatus.Pending, s.Items[1].PartStatus);   // 116 reset
+        Assert.Equal("C0603-999X", s.Items[1].ExpectedPart);             // to the new part
+        Assert.Equal(116, s.Current!.Feeder);                            // resume AT the amended feeder
+        Assert.Equal(ModelChangeState.Scanning, s.State);
+    }
+
+    [Fact]
+    public void SyncFeeders_reopens_a_completed_check_at_an_amended_feeder()
+    {
+        var s = TwoFeeders();
+        s.ScanBadge(Op);
+        s.ScanReel("R0402-10K", "u1"); s.SetScannedQty(100); s.ConfirmQty();
+        s.ScanReel("C0603-100N", "u2"); s.SetScannedQty(50); s.ConfirmQty();     // both done -> Complete
+        Assert.Equal(ModelChangeState.Complete, s.State);
+
+        s.SyncFeeders(new[] { (2, 115, "R0402-99Z"), (2, 116, "C0603-100N") });   // 115 amended after completion
+
+        Assert.Equal(FeederCheckStatus.Pending, s.Items[0].PartStatus);   // 115 reopened
+        Assert.Equal(FeederCheckStatus.Matched, s.Items[1].PartStatus);   // 116 kept
+        Assert.Equal(115, s.Current!.Feeder);                            // resume at the amended feeder
+        Assert.Equal(ModelChangeState.Scanning, s.State);
+    }
+
+    [Fact]
+    public void SyncFeeders_no_change_keeps_everything()
+    {
+        var s = TwoFeeders();
+        s.ScanBadge(Op);
+        s.ScanReel("R0402-10K", "u1"); s.SetScannedQty(100); s.ConfirmQty();   // on 116
+        s.SyncFeeders(new[] { (2, 115, "R0402-10K"), (2, 116, "C0603-100N") }); // identical map
+        Assert.Equal(FeederCheckStatus.Matched, s.Items[0].PartStatus);
+        Assert.Equal(116, s.Current!.Feeder);                                  // still on 116
+    }
 }

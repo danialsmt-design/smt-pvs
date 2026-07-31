@@ -192,6 +192,51 @@ public sealed class FullScanSession
 
     private ChangeStep Step(StepOutcome outcome, string message) => new(outcome, message);
 
+    /// <summary>
+    /// Re-pull the feeder list into an IN-PROGRESS scan (e.g. after a mid-check ProductBOM amendment). Unchanged
+    /// feeders keep their scanned status; a feeder whose expected part CHANGED (or is newly added) is reset to
+    /// Pending; removed feeders drop out. The scan resumes AT the amended feeder. Operator/badge is preserved.
+    /// </summary>
+    public ChangeStep SyncFeeders(IEnumerable<(int Machine, int Feeder, string ExpectedPart)> feeders)
+    {
+        var incoming = feeders?.ToList() ?? new List<(int, int, string)>();
+        if (incoming.Count == 0) return Step(StepOutcome.Rejected, "No feeders to sync.");
+        var keys = new HashSet<(int, int)>(incoming.Select(f => (f.Machine, f.Feeder)));
+        _items.RemoveAll(i => !keys.Contains((i.Machine, i.Feeder)));
+        var amended = new List<(int, int)>();
+        foreach (var f in incoming)
+        {
+            int idx = _items.FindIndex(i => i.Machine == f.Machine && i.Feeder == f.Feeder);
+            if (idx < 0)
+            {
+                _items.Add(new FeederCheck { Machine = f.Machine, Feeder = f.Feeder, ExpectedPart = f.ExpectedPart });
+                amended.Add((f.Machine, f.Feeder));
+            }
+            else if (!PartsMatch(_items[idx].ExpectedPart, f.ExpectedPart))
+            {
+                _items[idx] = new FeederCheck { Machine = f.Machine, Feeder = f.Feeder, ExpectedPart = f.ExpectedPart };
+                amended.Add((f.Machine, f.Feeder));
+            }
+        }
+        _items.Sort((a, b) => a.Machine != b.Machine ? a.Machine.CompareTo(b.Machine) : a.Feeder.CompareTo(b.Feeder));
+        _confirmed.RemoveWhere(m => !_items.Any(i => i.Machine == m));
+        if (State != FullScanState.AwaitingBadge)
+        {
+            int cur = -1;
+            if (amended.Count > 0)
+            {
+                var first = amended.OrderBy(k => k.Item1).ThenBy(k => k.Item2).First();
+                cur = _items.FindIndex(i => i.Machine == first.Item1 && i.Feeder == first.Item2);
+            }
+            if (cur < 0) cur = NextPending(-1);
+            _cursor = cur;
+            State = _cursor < 0 ? FullScanState.Complete : FullScanState.Scanning;
+        }
+        return amended.Count == 0
+            ? Step(StepOutcome.Ok, $"Checklist refreshed — no feeder changed ({_items.Count} feeders).")
+            : Step(StepOutcome.Ok, $"Checklist refreshed — {amended.Count} feeder(s) amended; rescan feeder {Current?.Feeder} on machine {Current?.Machine}.");
+    }
+
     // ---- persistence: capture / rebuild the whole check so it survives a restart or accidental cancel ----
 
     /// <summary>Capture the full check state (items, statuses, cursor, confirmed machines, operator).</summary>

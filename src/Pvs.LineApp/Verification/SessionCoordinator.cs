@@ -415,6 +415,15 @@ public sealed class SessionCoordinator : IDisposable
                     _expectedQty.TryGetValue(kv.Key, out var q) ? q : 0)).ToList();
             SaveModelCache();      // remember the model + feeder map so a restart isn't stuck with no model
             SaveFeederMapCache();  // persist the per-model feeder map for offline model selection
+            // If a check is in progress, refresh ITS checklist from the updated map (mid-check ProductBOM amendment)
+            // — keeps already-scanned feeders whose part didn't change, resumes AT the amended feeder.
+            if (_modelChange is not null || _scan is not null)
+            {
+                var syncList = _expected.Select(kv => (kv.Key.machine, kv.Key.feeder, kv.Value)).ToList();
+                if (_modelChange is not null) _lastMessage = _modelChange.SyncFeeders(syncList).Message;
+                else if (_scan is not null) _lastMessage = _scan.SyncFeeders(syncList).Message;
+                SaveScanProgress();
+            }
             return result;
         }
     }

@@ -188,4 +188,20 @@ public class FullScanSessionTests
         Assert.Equal(FullScanState.Complete, r.State);
         Assert.Equal(3, r.MatchedCount);
     }
+
+    [Fact]
+    public void SyncFeeders_refreshes_an_in_progress_scan_and_resumes_at_the_amended_feeder()
+    {
+        var s = ThreeFeeders();   // 115,116,117
+        s.ScanBadge(Op);
+        s.ScanReel("R0402-10K", "u1");   // 115 matched -> on 116
+
+        s.SyncFeeders(new[] { (2, 115, "R0402-10K"), (2, 116, "C0603-XXX"), (2, 117, "R0402-4K7") });
+
+        Assert.Equal(FeederCheckStatus.Matched, s.Items[0].Status);   // 115 kept
+        Assert.Equal(FeederCheckStatus.Pending, s.Items[1].Status);   // 116 reset
+        Assert.Equal("C0603-XXX", s.Items[1].ExpectedPart);
+        Assert.Equal(116, s.Current!.Feeder);                        // resume at the amended feeder
+        Assert.Equal(FullScanState.Scanning, s.State);
+    }
 }
