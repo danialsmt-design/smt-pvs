@@ -31,6 +31,10 @@
   .right .runs{font-size:14px;color:var(--mut);margin-top:2px}
   .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:18px;
          border:1px dashed var(--ln);border-radius:12px;text-align:center;padding:20px}
+  /* lot-aware: material short (issued won't cover the lot) flashes orange = REQUEST; reels that finish the lot go green */
+  .row.short{border-left-color:#F0932B;animation:shortflash 1s ease-in-out infinite}
+  @keyframes shortflash{0%,100%{background:var(--pan)}50%{background:rgba(240,147,43,.22)}}
+  .right .time.short{color:#F0932B;font-size:24px} .right .time.lasts{color:var(--ok);font-size:22px}
 </style>
 </head>
 <body>
@@ -59,7 +63,19 @@ async function load(){
   document.getElementById('sub').textContent =
     (st&&st.line?st.line:'Line') + (st&&st.lineId?(' · line '+st.lineId):'') + (v.currentShift?(' · '+v.currentShift+' shift'):'');
 
-  const rows = (ex.rows||[]).slice(0,5);
+  // lot-aware ranking: material-short first (REQUEST, lead time), then reels that WON'T finish the lot
+  // (soonest first), then reels that last the lot at the bottom.
+  const ranked = (ex.rows||[]).slice().sort((a,b)=>{
+    if(!!a.underIssued !== !!b.underIssued) return a.underIssued?-1:1;
+    if(!!a.lastsLot !== !!b.lastsLot) return a.lastsLot?1:-1;
+    return (a.minutes==null?1e9:a.minutes)-(b.minutes==null?1e9:b.minutes);
+  });
+  const rows = ranked.slice(0,5);
+  // headline: short parts + boards to lot end
+  if(ex.lotTracked){
+    const short=(ex.underIssuedParts||[]).length;
+    document.getElementById('sub').textContent += (short>0 ? (' · ⚠ '+short+' short for lot') : (ex.boardsToLotEnd!=null?(' · '+ex.boardsToLotEnd+' boards to lot end'):''));
+  }
   const el = document.getElementById('list');
   if(!rows.length){
     el.innerHTML = `<div class="empty">No tracked reels yet — run a shift or model-change check.<br>ရီးလ်မှတ်တမ်းမရှိသေး — ဆစ်ဖ်ပြောင်း သို့ မော်ဒယ်ပြောင်း စစ်ဆေးပါ.</div>`;
@@ -67,7 +83,16 @@ async function load(){
   }
   el.innerHTML = rows.map((r,i)=>{
     const cls = r.minutes==null?'na':(r.minutes<RED?'red':(r.minutes<AMBER?'amber':'ok'));
-    const rowCls = cls==='na'?'':cls;
+    let rowCls = cls==='na'?'':cls, right;
+    if(r.underIssued){
+      rowCls = 'short';
+      right = `<div class="time short">⚠ REQUEST / တောင်းရန်</div><div class="runs">no reel issued — short${r.shortfallBoards!=null?(' '+r.shortfallBoards+' bd'):''} · lead time</div>`;
+    } else if(r.lastsLot){
+      rowCls = 'ok';
+      right = `<div class="time lasts">✓ lasts lot</div><div class="runs">finishes this lot / လော့ပြီးအောင်</div>`;
+    } else {
+      right = `<div class="time ${cls}">${r.timeLeft}</div><div class="runs">${r.runsOut}</div>`;
+    }
     return `<div class="row ${rowCls}">
       <div class="rank">${i+1}</div>
       <div class="mid">
@@ -75,10 +100,7 @@ async function load(){
         <div class="part">${r.part}</div>
         <div class="qty">${Number(r.remaining).toLocaleString()} pcs left / ကျန် · ${r.perBoard}/panel</div>
       </div>
-      <div class="right">
-        <div class="time ${cls}">${r.timeLeft}</div>
-        <div class="runs">${r.runsOut}</div>
-      </div>
+      <div class="right">${right}</div>
     </div>`;
   }).join('');
 }
