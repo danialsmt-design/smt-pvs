@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Reel Quantity — Edit</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--amber:#E0A93B;--red:#D9635A}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  a.lnk{margin-left:auto;color:var(--mut);text-decoration:none;font-size:14px}
+  main{padding:18px 22px;max-width:640px;display:grid;gap:16px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:18px 20px}
+  label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 6px;font-weight:600}
+  input,button{font:16px inherit}
+  input{width:100%;background:var(--pan2);border:1px solid var(--ln);color:var(--ink);border-radius:8px;padding:12px;font-family:Consolas,monospace}
+  button{background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:8px;padding:11px 18px;cursor:pointer;font-weight:600;margin-top:16px}
+  button.sec{background:var(--pan2);border-color:var(--ln);color:var(--ink);font-weight:500}
+  .found{background:var(--pan2);border:1px solid var(--ln);border-radius:8px;padding:12px 14px;margin-top:6px;font-family:Consolas,monospace}
+  .found .big{font-size:26px;font-weight:600;color:var(--acc)}
+  .row{display:flex;gap:10px;align-items:flex-end}
+  .msg{margin-top:14px;padding:12px 14px;border-radius:8px;font-weight:600;display:none}
+  .msg.ok{background:rgba(79,180,119,.16);color:var(--ok);border:1px solid var(--ok);display:block}
+  .msg.err{background:rgba(217,99,90,.16);color:var(--red);border:1px solid var(--red);display:block}
+  .hint{color:var(--mut);font-size:13px;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Edit Reel Quantity</h1>
+  <a class="lnk" href="/verify.html">← Verify</a>
+  <a class="lnk" href="/">Monitor</a>
+</header>
+
+<main>
+  <div class="card">
+    <label>Reel UID</label>
+    <div class="row">
+      <input id="uid" placeholder="scan the reel UID" autocomplete="off">
+      <button class="sec" onclick="lookup()">Look up</button>
+    </div>
+    <div class="found" id="found" style="display:none">
+      Part <b id="part">—</b> · current qty <span class="big" id="curqty">—</span>
+    </div>
+
+    <label>New quantity</label>
+    <input id="newqty" type="number" min="0" placeholder="counted quantity" autocomplete="off">
+
+    <label>Supervisor badge (required)</label>
+    <input id="badge" placeholder="scan a supervisor badge to authorise" autocomplete="off">
+
+    <button onclick="save()">Save quantity</button>
+    <div class="hint">Changing a reel quantity writes to StockOuts and is recorded against the supervisor's badge.</div>
+    <div class="msg" id="msg"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let current = null;   // last looked-up reel {uid, part, qty}
+
+function show(id){ /* focus helper */ $(id).focus(); }
+function setMsg(text, ok){ const m=$('msg'); m.textContent=text; m.className='msg '+(ok?'ok':'err'); }
+
+async function lookup(){
+  const uid = $('uid').value.trim(); if(!uid) return;
+  $('msg').className='msg';
+  try{
+    const r = await (await fetch('/api/reel?uid='+encodeURIComponent(uid))).json();
+    if(r.found){
+      current = r;
+      $('part').textContent = r.part;
+      $('curqty').textContent = r.qty;
+      $('found').style.display='block';
+      $('newqty').value = '';
+      show('newqty');
+    } else {
+      current = null; $('found').style.display='none';
+      setMsg('Reel UID not found in StockOuts.', false);
+    }
+  }catch(e){ setMsg('Lookup failed: '+e, false); }
+}
+
+async function save(){
+  const uid = $('uid').value.trim();
+  const qty = parseInt($('newqty').value);
+  const badge = $('badge').value.trim();
+  if(!uid){ setMsg('Scan a reel UID first.', false); return; }
+  if(!(qty>=0)){ setMsg('Enter a valid quantity.', false); return; }
+  if(!badge){ setMsg('Scan a supervisor badge to authorise.', false); show('badge'); return; }
+  try{
+    const r = await (await fetch('/api/reel/qty',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({uid, quantity:qty, badge})})).json();
+    setMsg(r.message, r.ok);
+    if(r.ok){ $('badge').value=''; lookup(); }   // refresh the displayed current qty
+    else { $('badge').value=''; }
+  }catch(e){ setMsg('Save failed: '+e, false); }
+}
+
+// scanner/keyboard flow: UID Enter -> lookup; qty Enter -> badge; badge Enter -> save
+$('uid').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); lookup(); }});
+$('newqty').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); show('badge'); }});
+$('badge').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); save(); }});
+$('uid').focus();
+</script>
+</body>
+</html>

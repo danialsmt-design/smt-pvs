@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Machine Feeder Inventory</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--red:#D9635A}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  a.lnk{color:var(--mut);text-decoration:none;font-size:14px}
+  header .sp{margin-left:auto}
+  main{padding:18px 22px;max-width:1000px;display:grid;gap:16px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:16px 18px}
+  .mtabs{display:flex;gap:8px;flex-wrap:wrap}
+  .mtab{background:var(--pan2);border:1px solid var(--ln);color:var(--mut);border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:600;font-size:16px}
+  .mtab.active{border-color:var(--acc);color:var(--ink);background:var(--pan)}
+  label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);font-weight:600}
+  input{background:var(--pan2);border:1px solid var(--ln);color:var(--ink);border-radius:8px;padding:9px 11px;font:15px Consolas,monospace}
+  button{background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:8px;padding:8px 14px;cursor:pointer;font:14px inherit;font-weight:600}
+  button.sec{background:var(--pan2);border-color:var(--ln);color:var(--ink);font-weight:500}
+  table{width:100%;border-collapse:collapse;font-size:14px;font-family:Consolas,monospace}
+  th{text-align:left;color:var(--mut);font-size:12px;padding:8px 10px;border-bottom:1px solid var(--ln)}
+  td{padding:8px 10px;border-bottom:1px solid #131A16}
+  td input{width:110px;text-align:right}
+  .muted{color:var(--mut);font-size:13px}
+  .msg{margin-top:10px;padding:10px 12px;border-radius:8px;font-weight:600;display:none}
+  .msg.ok{background:rgba(79,180,119,.16);color:var(--ok);display:block}
+  .msg.err{background:rgba(217,99,90,.16);color:var(--red);display:block}
+  .empty{color:var(--mut);padding:12px 10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Machine Feeder Inventory</h1>
+  <span class="muted" id="model">—</span>
+  <span class="sp"></span>
+  <a class="lnk" href="/verify.html">Verify</a> &nbsp;<a class="lnk" href="/">Monitor</a>
+</header>
+
+<main>
+  <div class="card">
+    <div class="mtabs" id="mtabs"></div>
+    <div style="margin-top:14px" class="row">
+      <label>Supervisor badge (to adjust)</label><br>
+      <input id="badge" placeholder="scan a supervisor badge" autocomplete="off" style="width:280px">
+      <button class="sec" onclick="load()">↻ Refresh</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <table><thead><tr><th>Feeder</th><th>Part</th><th>Reel UID</th><th>Qty available</th><th></th></tr></thead>
+      <tbody id="rows"></tbody></table>
+    <div class="empty" id="empty">Select a machine.</div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let machine = null;
+function setMsg(t, ok){ const m=$('msg'); m.textContent=t; m.className='msg '+(ok?'ok':'err'); }
+
+function tabs(){
+  const mt=$('mtabs'); mt.innerHTML='';
+  [1,2,3,4].forEach(m=>{
+    mt.insertAdjacentHTML('beforeend', `<button class="mtab ${m===machine?'active':''}" onclick="pick(${m})">Machine ${m}</button>`);
+  });
+}
+function pick(m){ machine=m; tabs(); load(); }
+
+async function load(){
+  if(!machine) return;
+  $('msg').className='msg';
+  const r = await (await fetch('/api/inventory?machine='+machine)).json();
+  $('model').textContent = r.model ? (r.model + ' · ' + r.side + ' side') : 'no model selected on the line';
+  const tb=$('rows'); tb.innerHTML='';
+  if(!r.feeders || !r.feeders.length){ $('empty').style.display='block'; $('empty').textContent = r.model? 'No feeders for this machine.' : 'Select the running model on the Verify screen first.'; return; }
+  $('empty').style.display='none';
+  r.feeders.forEach(f=>{
+    const uid = f.uid || '—';
+    const qty = (f.qty==null)?'':f.qty;
+    const canEdit = !!f.uid;
+    tb.insertAdjacentHTML('beforeend',
+      `<tr>
+        <td>${f.feeder}</td><td>${f.part}</td><td>${uid}</td>
+        <td>${canEdit? `<input id="q_${f.feeder}" type="number" min="0" value="${qty}">` : '<span class="muted">not scanned</span>'}</td>
+        <td>${canEdit? `<button onclick="save(${f.feeder})">Save</button>`:''}</td>
+      </tr>`);
+  });
+}
+
+async function save(feeder){
+  const badge = $('badge').value.trim();
+  const qty = parseInt($('q_'+feeder).value);
+  if(!badge){ setMsg('Scan a supervisor badge first.', false); $('badge').focus(); return; }
+  if(!(qty>=0)){ setMsg('Enter a valid quantity.', false); return; }
+  const r = await (await fetch('/api/inventory/adjust',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({machine, feeder, quantity:qty, badge})})).json();
+  setMsg(r.message, r.ok);
+  if(r.ok) load();
+}
+tabs();
+</script>
+</body>
+</html>

@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Parts Verification — Operator</title>
+<style>
+  :root{
+    --bg:#0C110F;--bg2:#080C0A;--pan:#141C18;--pan2:#1B251F;--pan3:#243128;
+    --ln:#293A31;--ln2:#37493E;--ink:#EAF1EC;--fg:#EAF1EC;--mut:#8EA398;--mut2:#6E8377;
+    --acc:#E3A63C;--acc2:#F0B95A;--ok:#54BD7F;--amber:#E6B04A;--red:#E36B60;--blue:#5A92D4;
+    --sh1:0 1px 2px rgba(0,0,0,.35);--sh2:0 6px 22px rgba(0,0,0,.40);--rad:14px}
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  html,body{height:100%}
+  body{margin:0;color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,Calibri,Arial,sans-serif;
+    font-feature-settings:"tnum" 1;display:flex;flex-direction:column;overflow:hidden;
+    background:radial-gradient(1200px 600px at 78% -8%,#16201A 0%,rgba(22,32,26,0) 60%),
+               radial-gradient(900px 500px at 0% 100%,#111A15 0%,rgba(17,26,21,0) 55%),var(--bg)}
+  b{font-weight:700}
+  /* ---- header ---- */
+  header{flex:none;position:sticky;top:0;z-index:40;padding:9px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    background:linear-gradient(180deg,rgba(12,17,15,.92),rgba(12,17,15,.72));backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--ln);box-shadow:var(--sh1)}
+  .brand{display:flex;align-items:baseline;gap:10px;min-width:0}
+  .brand .dot{align-self:center;width:11px;height:11px;border-radius:50%;background:var(--acc);flex:none;
+    box-shadow:0 0 0 4px rgba(227,166,60,.16),0 0 12px rgba(227,166,60,.55)}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand .sub{font-size:12px;color:var(--mut);white-space:nowrap}
+  #model{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:999px;font-size:13.5px;font-weight:600;
+    color:var(--ink);background:var(--pan2);border:1px solid var(--ln2);white-space:nowrap;box-shadow:var(--sh1)}
+  #model::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .nav{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  a.mon{color:var(--mut);text-decoration:none;font-size:13px;font-weight:600;padding:7px 12px;border-radius:9px;
+    border:1px solid transparent;transition:.15s;white-space:nowrap}
+  a.mon:hover{color:var(--ink);background:var(--pan2);border-color:var(--ln)}
+  a.mon.back{color:var(--acc2);border-color:var(--ln2);background:var(--pan2)}
+  a.mon.back:hover{border-color:var(--acc)}
+  main{flex:1;min-height:0;padding:10px 16px;max-width:1500px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+  .split{flex:1;min-height:0;display:grid;grid-template-columns:360px 1fr;gap:12px;align-items:stretch}
+  @media(max-width:900px){ .split{grid-template-columns:1fr} }
+  .split .card{margin:0}
+  .split > .card{min-height:0;overflow:auto}          /* left (current task): scroll inside the card if tall */
+  .rightcol{min-height:0;overflow:hidden}             /* right column fills height; checklist scrolls internally */
+  #checklistCard{flex:1;min-height:0;overflow:auto}
+  #exhMini,#lotCard{flex:none}
+  /* ---- cards ---- */
+  .card{position:relative;background:linear-gradient(180deg,var(--pan),#121A16);border:1px solid var(--ln);
+    border-radius:var(--rad);padding:14px 16px;box-shadow:var(--sh2)}
+  .card.compact{padding:9px 14px}
+  .card::before{content:"";position:absolute;inset:0 0 auto;height:1px;border-radius:var(--rad) var(--rad) 0 0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);pointer-events:none}
+  h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--mut);margin:0 0 10px;font-weight:700;
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .seclbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut2);font-weight:700}
+  .setuplink{margin-left:auto;color:var(--acc2);text-decoration:none;font-weight:600;font-size:12px;text-transform:none;letter-spacing:0}
+  .setuplink:hover{text-decoration:underline}
+  /* ---- controls ---- */
+  select,input,button{font:15px inherit}
+  select,input{background:var(--pan2);border:1px solid var(--ln2);color:var(--ink);border-radius:10px;padding:10px 12px;transition:.15s}
+  select:hover{border-color:var(--mut2)}
+  select:focus,input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px rgba(227,166,60,.16)}
+  button{background:var(--pan2);border:1px solid var(--ln2);color:var(--ink);border-radius:10px;padding:10px 15px;cursor:pointer;
+    font-weight:600;transition:transform .1s,border-color .15s,background .15s,filter .15s}
+  button:hover{border-color:var(--acc);background:var(--pan3)}
+  button:active{transform:translateY(1px)}
+  button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  button.pri{background:linear-gradient(180deg,var(--acc2),var(--acc));border-color:var(--acc2);color:#231703;font-weight:700;
+    box-shadow:0 2px 10px rgba(227,166,60,.28)}
+  button.pri:hover{filter:brightness(1.06);background:linear-gradient(180deg,var(--acc2),var(--acc))}
+  button.chk{background:var(--pan3);border-color:var(--ln2);color:var(--ink);font-weight:700;padding:9px 15px}
+  button.chk:hover{border-color:var(--acc);color:var(--acc2)}
+  .vsep{width:1px;height:22px;background:var(--ln2);flex:none}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .subrow{margin-top:14px;padding-top:14px;border-top:1px dashed var(--ln)}
+  /* ---- current-task hero ---- */
+  #prompt{font-size:18px;font-weight:700;line-height:1.3;margin:2px 0 9px}
+  #scan{width:100%;font:600 20px/1 ui-monospace,Consolas,monospace;padding:13px 14px;text-align:center;letter-spacing:2px;
+    background:var(--pan2);border:2px solid var(--ln2);border-radius:12px;color:var(--ink)}
+  #scan::placeholder{color:var(--mut);letter-spacing:.5px;font-weight:500;font-family:"Segoe UI",system-ui,sans-serif;font-size:16px}
+  #scan:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 4px rgba(227,166,60,.18);animation:scanpulse 2.4s ease-in-out infinite}
+  @keyframes scanpulse{0%,100%{box-shadow:0 0 0 4px rgba(227,166,60,.16)}50%{box-shadow:0 0 0 8px rgba(227,166,60,.04)}}
+  /* ---- state chip ---- */
+  .state{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-size:12.5px;font-weight:700;
+    letter-spacing:.02em;border:1px solid transparent}
+  .state::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+  .state.ok{background:rgba(84,189,127,.15);color:var(--ok);border-color:rgba(84,189,127,.35)}
+  .state.interlock{background:rgba(227,107,96,.16);color:var(--red);border-color:rgba(227,107,96,.4);animation:chippulse 1s ease-in-out infinite}
+  .state.idle{background:var(--pan2);color:var(--mut);border-color:var(--ln)}
+  @keyframes chippulse{0%,100%{opacity:1}50%{opacity:.55}}
+  /* ---- banners ---- */
+  .banner{padding:11px 14px;border-radius:11px;font-weight:600;margin-bottom:9px;display:none;line-height:1.4}
+  .banner.red{background:linear-gradient(180deg,rgba(227,107,96,.18),rgba(227,107,96,.10));color:#ffb7af;border:1px solid rgba(227,107,96,.55);display:block;box-shadow:var(--sh1)}
+  .banner.amber{background:linear-gradient(180deg,rgba(230,176,74,.16),rgba(230,176,74,.08));color:#f4d189;border:1px solid rgba(230,176,74,.5);display:block}
+  /* ---- table ---- */
+  table{width:100%;border-collapse:collapse;font-size:14px;font-family:ui-monospace,Consolas,monospace}
+  th{text-align:left;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--ln2);font-family:"Segoe UI",system-ui,sans-serif}
+  td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.04)}
+  tbody tr{transition:background .15s}
+  tr.blue td{background:rgba(90,146,212,.10)} tr.green td{background:rgba(84,189,127,.15)}
+  tr.amber td{background:rgba(230,176,74,.13)}
+  tr.red td{background:rgba(227,107,96,.15)}
+  tr.cur td{box-shadow:inset 2px 0 0 var(--acc);background:rgba(227,166,60,.09)}
+  tr[onclick]{cursor:pointer} tr[onclick]:hover td{background:rgba(255,255,255,.05)}
+  /* ---- pills ---- */
+  .pill{display:inline-block;padding:3px 9px;border-radius:7px;font-size:11.5px;font-weight:700;border:1px solid transparent}
+  .pill.blue{background:rgba(90,146,212,.18);color:#9dc0ea;border-color:rgba(90,146,212,.35)}
+  .pill.green{background:rgba(84,189,127,.18);color:#8fe0b0;border-color:rgba(84,189,127,.35)}
+  .pill.amber{background:rgba(230,176,74,.18);color:#f4d189;border-color:rgba(230,176,74,.35)}
+  .pill.red{background:rgba(227,107,96,.2);color:#ffb0a8;border-color:rgba(227,107,96,.4)}
+  .muted{color:var(--mut);font-size:13px}
+  /* ---- machine tabs ---- */
+  .mtabs{display:flex;gap:7px;margin-bottom:12px;flex-wrap:wrap}
+  .mtab{background:var(--pan2);border:1px solid var(--ln2);color:var(--mut);border-radius:10px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:15px;transition:.15s}
+  .mtab small{font-weight:500;opacity:.9;font-size:12px}
+  .mtab:hover{border-color:var(--acc);color:var(--ink)}
+  .mtab.active{border-color:var(--acc);color:var(--ink);background:var(--pan3);box-shadow:0 0 0 3px rgba(227,166,60,.14)}
+  .mtab.done{color:var(--ok);border-color:rgba(84,189,127,.5)}
+  .mtab.bad{color:var(--red);border-color:rgba(227,107,96,.5)}
+  .mtab.active.done{background:rgba(84,189,127,.13)}
+  .mtab.active.bad{background:rgba(227,107,96,.13)}
+  .op{float:right;font-size:14px;font-weight:600;color:var(--acc);text-transform:none;letter-spacing:0}
+  .op::before{content:"👤 ";}
+  /* guided parts-change steps */
+  .pcsteps{margin:12px 0;border:1px solid var(--ln2);border-radius:14px;overflow:hidden;background:var(--pan);box-shadow:var(--sh1)}
+  .pcstep{display:grid;grid-template-columns:48px 140px 1fr;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--ln);transition:background .2s}
+  .pcstep:last-child{border-bottom:none}
+  .pcstep.active{background:linear-gradient(90deg,rgba(227,166,60,.16),rgba(227,166,60,.05))}
+  .pcstep.done{background:rgba(84,189,127,.05)}
+  .pcstep.pending{opacity:.45}
+  .pcstep .mk{font-size:27px;font-weight:800;text-align:center;color:var(--mut);line-height:1}
+  .pcstep.active .mk{color:var(--acc);animation:arrowflash .8s ease-in-out infinite}
+  .pcstep.done .mk{color:var(--ok)}
+  .pcstep .lbl{font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.03em}
+  .pcstep .val{font-family:ui-monospace,Consolas,monospace;font-size:17px;margin-right:14px}
+  .pcstep .val .k{color:var(--mut);font-size:12px;font-weight:600;margin-right:3px;font-family:"Segoe UI",system-ui,sans-serif}
+  .pcstep .act{color:var(--acc);font-weight:800;font-size:16px;animation:arrowflash .8s ease-in-out infinite}
+  @keyframes arrowflash{0%,100%{opacity:1}50%{opacity:.25}}
+  .pcok{padding:28px;text-align:center;font-size:34px;font-weight:800;color:var(--ok);border-radius:14px;
+        animation:okpulse .7s ease-in-out infinite;margin:12px 0}
+  @keyframes okpulse{0%,100%{background:rgba(84,189,127,.14)}50%{background:rgba(84,189,127,.34)}}
+  /* big full-screen step overlay (readable from far) — pointer-events:none so scans/clicks pass through */
+  #bigStep{position:fixed;inset:0;z-index:60;display:none;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;gap:2.5vh;padding:4vh;pointer-events:none;backdrop-filter:blur(3px);
+    background:radial-gradient(1000px 700px at 50% 40%,rgba(20,28,24,.96),rgba(9,13,11,.985))}
+  #bigStep.ok{background:radial-gradient(1000px 700px at 50% 40%,rgba(16,46,29,.96),rgba(6,18,11,.985))}
+  #bigStep.bad{background:radial-gradient(1000px 700px at 50% 40%,rgba(52,18,16,.96),rgba(20,7,6,.985))}
+  #bigStep .bsub{font-size:min(6vw,44px);color:var(--mut);font-weight:700;line-height:1.08}
+  #bigStep .bmain{font-size:min(13vw,150px);font-weight:900;line-height:.98;letter-spacing:-.01em}
+  #bigStep.go .bmain{color:var(--acc)} #bigStep.ok .bmain{color:var(--ok)} #bigStep.bad .bmain{color:var(--red)}
+  #bigStep .bpart{font-family:ui-monospace,Consolas,monospace;font-size:min(11vw,120px);font-weight:900;color:var(--ink);
+    background:var(--pan2);border:4px solid var(--acc);border-radius:20px;padding:1vh 4vw;max-width:96vw;overflow:hidden;text-overflow:ellipsis;
+    box-shadow:0 0 0 1px rgba(0,0,0,.4),0 12px 40px rgba(0,0,0,.5)}
+  #bigToggle{background:var(--pan2);border:1px solid var(--ln2);color:var(--ink);border-radius:9px;padding:7px 12px;cursor:pointer;font:600 13px inherit}
+  #bigToggle.on{border-color:var(--acc);color:var(--acc)}
+  /* cancel/false-alarm button pinned on top of the big overlay (clickable even when overlay is up) */
+  #bigCancel{position:fixed;bottom:5vh;left:50%;transform:translateX(-50%);z-index:62;display:none;pointer-events:auto;
+    background:linear-gradient(180deg,#ec7c72,#d9564b);border:2px solid #ec7c72;color:#fff;font:800 min(4vw,26px)/1 inherit;
+    border-radius:16px;padding:2.2vh 5vw;cursor:pointer;box-shadow:0 8px 26px rgba(0,0,0,.55)}
+  #bigCancel:active{transform:translateX(-50%) translateY(1px)}
+  /* backup OK/confirm button on the big overlay for the FIRM step (when the scan won't register) */
+  #bigConfirm{position:fixed;bottom:17vh;left:50%;transform:translateX(-50%);z-index:62;display:none;pointer-events:auto;
+    background:linear-gradient(180deg,#68cf92,#43b673);border:2px solid #68cf92;color:#04140b;font:900 min(5vw,34px)/1 inherit;
+    border-radius:16px;padding:2.6vh 7vw;cursor:pointer;box-shadow:0 8px 26px rgba(0,0,0,.55)}
+  #bigConfirm:active{transform:translateX(-50%) translateY(1px)}
+  /* lot progress bar + end-of-lot flash */
+  #lotBar{padding:6px 12px;border-radius:9px;font-size:13px;font-weight:700;background:var(--pan2);border:1px solid var(--ln2);color:var(--mut)}
+  #lotBar.warn{border-color:var(--red);color:var(--red);background:rgba(227,107,96,.14)}
+  @keyframes lotpulse{0%,100%{background:radial-gradient(900px 600px at 50% 40%,rgba(52,16,15,.97),rgba(20,7,6,.98))}
+    50%{background:radial-gradient(900px 600px at 50% 40%,rgba(78,22,20,.98),rgba(30,10,9,.99))}}
+  #lotFlash{position:fixed;inset:0;z-index:66;display:none;flex-direction:column;align-items:center;justify-content:center;
+    gap:2.5vh;text-align:center;padding:4vh;animation:lotpulse 1s ease-in-out infinite}
+  #lotFlash .lfmain{font-size:min(11vw,110px);font-weight:900;color:#ff8078;line-height:1;text-shadow:0 4px 30px rgba(255,107,96,.4)}
+  #lotFlash .lfsub{font-size:min(4.5vw,34px);color:var(--ink);font-weight:700}
+  #lotFlash .lfadd{margin-top:2vh;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:center;pointer-events:auto}
+  #lotFlash input{font-size:26px;padding:10px 12px;width:210px;text-align:center;background:var(--pan2);border:2px solid var(--ln2);color:var(--ink);border-radius:12px}
+  #lotFlash button{font-size:22px;font-weight:700;padding:12px 24px;border-radius:14px;cursor:pointer;background:linear-gradient(180deg,var(--acc2),var(--acc));border:1px solid var(--acc2);color:#231703}
+  #lotFlash button.sec{background:var(--pan2);border-color:var(--ln2);color:var(--ink)}
+  #lotFlash #lotMsg{font-size:20px;color:var(--ok);min-height:24px}
+  #lotCard .lbl{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+  #lotCard .big{font-size:46px;font-weight:900;line-height:1;margin-top:6px;font-feature-settings:"tnum" 1}
+  #lotCard .unit{font-size:13px;color:var(--mut);font-weight:600}
+  #lotCard .prog{font-size:13px;color:var(--mut);margin-top:8px}
+  #lotCard.warn{border-color:var(--red);background:linear-gradient(180deg,rgba(227,107,96,.14),rgba(227,107,96,.06))}
+  #lotCard.warn .big{color:var(--red)}
+  #lotCard.done{border-color:rgba(84,189,127,.5);background:linear-gradient(180deg,rgba(84,189,127,.12),rgba(84,189,127,.05))}
+  #lotCard.done .big{color:var(--ok);font-size:34px}
+  /* top-5 exhaust panel — sits at the TOP of the right column (fills the gap beside the model/task) */
+  .rightcol{display:flex;flex-direction:column;gap:10px}
+  #exhMini{padding:11px 13px}
+  #exhMini .hd{font-size:11.5px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
+  #exhMini .er{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 11px;border-radius:10px;
+    border-left:4px solid var(--mut2);background:var(--pan2);margin-bottom:7px;transition:.15s}
+  #exhMini .er:last-child{margin-bottom:0}
+  #exhMini .er.red{border-left-color:var(--red);background:rgba(227,107,96,.08)}
+  #exhMini .er.amber{border-left-color:var(--amber);background:rgba(230,176,74,.07)}
+  #exhMini .er.ok{border-left-color:var(--ok)}
+  #exhMini .pt{font-family:ui-monospace,Consolas,monospace;font-weight:700;font-size:14px}
+  #exhMini .loc{color:var(--mut);font-size:11px;margin-top:2px}
+  #exhMini .tm{font-weight:800;white-space:nowrap;font-size:16px}
+  #exhMini .tm.red{color:var(--red)} #exhMini .tm.amber{color:var(--amber)} #exhMini .tm.ok{color:var(--ok)}
+  /* material short — issued reels won't cover the lot; flashing orange = REQUEST now (lead time) */
+  #exhMini .er.short{border-left-color:#F0932B;animation:shortflash 1s ease-in-out infinite}
+  #exhMini .tm.short{color:#F0932B}
+  @keyframes shortflash{0%,100%{background:rgba(240,147,43,.10)}50%{background:rgba(240,147,43,.34)}}
+  #exhMini .hd.okhd{color:var(--ok)}
+  #exhMini .hd.warnhd{color:#F0932B}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span><h1>Parts Verification</h1><span class="sub">Operator</span></div>
+  <span id="model">no model selected</span>
+  <nav class="nav">
+    <a class="mon back" href="/setup.html">⚙ Model &amp; lot</a>
+    <a class="mon" href="/machine-inv.html">Machine inv →</a>
+    <a class="mon" href="/reel.html">Reel qty →</a>
+    <a class="mon" href="/">Monitor →</a>
+    <button id="bigToggle" onclick="toggleBig()">🔍 Big</button>
+  </nav>
+</header>
+
+<div id="bigStep"></div>
+<button id="bigConfirm" onclick="bigConfirmAction()">✔ OK / အတည်ပြု</button>
+<button id="bigCancel" onclick="bigCancelAction()">✖ FALSE ALARM / Cancel — ပယ်ဖျက်</button>
+
+<div id="lotFlash">
+  <div class="lfmain"><span id="lfLeft">0</span> <span id="lfHead">boards to LOT END</span></div>
+  <div class="lfsub">LOT ကုန်ခါနီး · Lot <span id="lfLot"></span> · <span id="lfProd"></span></div>
+  <div class="lfadd">
+    <span>Add extra qty / အပိုထည့်:</span>
+    <input id="lotQty" type="number" min="1" placeholder="boards" inputmode="numeric">
+    <input id="lotBadge" type="text" placeholder="scan supervisor / ကြီးကြပ်ကတ်">
+    <button onclick="addLotQty()">➕ Add / ထည့်</button>
+    <button class="sec" onclick="dismissLotFlash()">OK / ပိတ်</button>
+  </div>
+  <div id="lotMsg"></div>
+</div>
+
+<main>
+  <div class="card compact" id="setup">
+    <div class="row" style="gap:10px">
+      <span class="seclbl">Check</span>
+      <button class="chk" onclick="start('ShiftChange')">Shift-change</button>
+      <button class="chk" onclick="start('LotEnd')">Lot-end</button>
+      <button class="chk" onclick="start('ModelChange')">Model-change</button>
+      <span class="vsep"></span>
+      <span class="seclbl">Manual change</span>
+      <select id="pcMachine" onchange="fillFeeders()"></select>
+      <select id="pcFeeder"></select>
+      <button onclick="triggerPartChange()">Trigger</button>
+      <a class="setuplink" href="/setup.html" style="margin-left:auto">⚙ Model &amp; lot →</a>
+    </div>
+    <div class="muted" id="ctlMsg" style="margin-top:6px;min-height:0"></div>
+  </div>
+
+  <div class="split">
+  <div class="card">
+    <h2>Current task <span class="state idle" id="stateChip">idle</span>
+        <span class="op" id="opName"></span></h2>
+    <div class="banner red" id="interlock"></div>
+    <div class="banner amber" id="pending"></div>
+    <div class="banner amber" id="falseCall"></div>
+    <div id="prompt">Waiting… / စောင့်ဆိုင်းနေသည်…</div>
+    <div id="pcDetail" style="display:none;margin:10px 0;border:1px solid var(--ln);border-radius:10px;overflow:hidden"></div>
+    <input id="scan" placeholder="scan badge / reel — ကတ်/ရီးလ် ဖတ်ပါ" autocomplete="off">
+    <div id="feedback" class="muted" style="margin-top:8px;min-height:20px"></div>
+    <div class="row" id="qtyRow" style="margin-top:10px;display:none">
+      <button class="pri" onclick="confirmQty()">✔ Confirm qty / အရေအတွက်အတည်ပြု</button>
+      <button onclick="rejectQty()">✖ Qty wrong / အရေအတွက်မှား — call supervisor / ကြီးကြပ်ကိုခေါ်ပါ</button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button onclick="clearScan()">Clear scan / စကင်ရှင်း</button>
+      <button onclick="doSkip()">Skip / ကျော်ရန် (false alarm / အမှား)</button>
+      <button onclick="doCancel()">Cancel / ပယ်ဖျက်</button>
+      <span class="muted" id="scanHint"></span>
+    </div>
+  </div>
+
+  <div class="rightcol">
+    <div class="card" id="checklistCard" style="display:none">
+      <h2>Feeder checklist <span class="muted" id="progress"></span></h2>
+      <div class="mtabs" id="mtabs"></div>
+      <div id="machineConfirm" style="margin:2px 0 10px;display:none"></div>
+      <table><thead><tr><th>Machine</th><th>Feeder</th><th>Expected</th><th>Scanned</th><th>UID</th><th>Status</th><th>Qty</th></tr></thead>
+        <tbody id="checklist"></tbody></table>
+    </div>
+    <div class="card" id="exhMini">
+      <div class="hd" id="exhMiniHd">⏱ Next to run out / နောက်ကုန်မည့် — Top 5</div>
+      <div id="exhMiniRows"></div>
+    </div>
+    <div class="card" id="lotCard" style="display:none"></div>
+  </div>
+  </div>
+</main>
+
+<script>
+let reelBuf = null;      // holds the first (part-number) scan while waiting for the UID scan
+let pendingScan = null;  // {machine,feeder,part} — shown in the current row immediately, before the UID scan
+let selMachine = null;   // selected machine tab (null = follow the current feeder's machine)
+let pcQtyVal = null;     // parts-change new-reel qty (seeded from parts control, editable) — preserved across polls
+let pcJustDone = 0;      // timestamp a parts-change completed — flash "Change OK" for ~3s then return to wait
+let bigEnabled = (localStorage.getItem('pvsBig') ?? '1') === '1';  // big full-screen step overlay (default on)
+let bigLastPass = 0, bigOkUntil = 0;   // per-scan "OK" flash tracking for the big overlay
+let lastCurMachine = null;
+const $ = id => document.getElementById(id);
+async function selectTab(m){
+  const st = window._state || {};
+  const isScan = (st.mode==='ModelChange' || st.mode==='ShiftChange' || st.mode==='LotEnd');
+  const hasPending = st.checklist && st.checklist.some(i=>i.machine===m && i.status==='Pending');
+  if(isScan && hasPending && st.state==='Scanning'){
+    selMachine = m; reelBuf=null; pendingScan=null;
+    render(await api('/api/session/machine/scan', {machine:m}));   // start scanning this machine
+    return;
+  }
+  selMachine = m; render(window._state);   // just view a completed/other machine
+}
+
+// The barcode scanner types into whatever is focused, so the scan field must stay focused —
+// EXCEPT while the operator is actually using one of the on-page controls.
+function focusScan(){
+  const a = document.activeElement;
+  if (a && (a.id === 'pcMachine' || a.id === 'pcFeeder' || a.id === 'lotQty' || a.id === 'lotBadge' || a.id === 'pcQty')) return;
+  $('scan').focus();
+}
+
+async function api(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  return r.json();
+}
+
+// Model selection + lot selection moved to /setup.html. This page is live scan activity only.
+async function start(mode){ const r = await api('/api/session/start',{mode}); $('ctlMsg').textContent=r.message; refresh(); }
+
+// Manual part-change picker: choose machine + feeder, then the normal exhaust scan flow follows.
+let _fgrouped = [];
+async function loadFeeders(){
+  try{ _fgrouped = await (await fetch('/api/feeders')).json(); }catch(e){ _fgrouped = []; }
+  const msel = $('pcMachine'); const prev = msel.value;
+  msel.innerHTML = _fgrouped.map(g=>`<option value="${g.machine}">Machine ${g.machine}</option>`).join('');
+  if(prev && _fgrouped.some(g=>String(g.machine)===prev)) msel.value = prev;
+  fillFeeders();
+}
+function fillFeeders(){
+  const m = +$('pcMachine').value;
+  const g = _fgrouped.find(x=>x.machine===m);
+  $('pcFeeder').innerHTML = g ? g.feeders.map(f=>`<option value="${f.feeder}">Feeder ${f.feeder} · ${f.part}</option>`).join('') : '';
+}
+async function triggerPartChange(){
+  const machine = +$('pcMachine').value, feeder = +$('pcFeeder').value;
+  if(!machine || !feeder){ $('ctlMsg').textContent = 'Pick a machine and feeder first.'; return; }
+  const r = await api('/api/session/partschange', {machine, feeder});
+  $('ctlMsg').textContent = r.message; refresh();
+}
+async function confirmChangeQty(){
+  const q = parseInt((pcQtyVal!=null?pcQtyVal:'').toString().trim());
+  if(isNaN(q)){ $('scanHint').textContent = 'Key the quantity on the new reel first / ရီးလ်အသစ်၏ အရေအတွက် အရင်ရိုက်ပါ.'; const b=$('pcQty'); if(b) b.focus(); return; }
+  const res = await api('/api/session/quantity', {quantity:q});
+  if(!res || res.mode!=='PartsChange'){ pcJustDone = Date.now(); pcQtyVal=null; setTimeout(refresh, 3200); }  // completed -> flash Change OK, then back to wait
+  render(res);
+}
+async function confirmMachine(m){ render(await api('/api/session/machine/confirm', {machine:m})); }
+async function confirmQty(){ render(await api('/api/session/qty/confirm')); }
+async function rejectQty(){ render(await api('/api/session/qty/reject')); }
+async function doSkip(){ render(await api('/api/session/skip')); }
+async function doCancel(){
+  const st = window._state || {};
+  // Cancelling a CHECK wipes its progress — confirm first so it can't happen by accident.
+  if(st.mode==='ModelChange' || st.mode==='ShiftChange' || st.mode==='LotEnd'){
+    const done = (st.checklist||[]).filter(i => i.status==='Matched' || i.status==='Released').length;
+    if(!confirm(`Cancel the ${st.mode} check?\n${done} feeder(s) already scanned will be cleared from the check.\nScanned reels stay in inventory, but you'd re-run the check to finish it.`)) return;
+  }
+  reelBuf=null; pendingScan=null; $('scanHint').textContent=''; render(await api('/api/session/cancel'));
+}
+function clearScan(){ reelBuf=null; pendingScan=null; $('scanHint').textContent='scan cleared — scan the part number again / ရှင်းပြီး — ပါ့တ်နံပါတ် ပြန်ဖတ်ပါ'; render(window._state); }
+async function clearFeeder(m,f){
+  const st = window._state || {};
+  if(!(st.checklist && st.checklist.length)) return;   // only meaningful for full-scan / model-change
+  if(!confirm(`Clear feeder ${f} (M${m}) and rescan it?`)) return;
+  reelBuf=null; pendingScan=null;
+  render(await api('/api/session/feeder/clear', {machine:m, feeder:f}));
+}
+
+$('scan').addEventListener('keydown', async e => {
+  if(e.key !== 'Enter') return;
+  const val = $('scan').value.trim(); $('scan').value = ''; if(!val) return;
+  const st = window._state || {};
+  const up = val.toUpperCase();
+  const isUid   = val.endsWith('%');                       // reel UIDs and badges end with '%'; part numbers don't
+  const isFirm  = up.startsWith('FIRM');                   // confirm barcode = "FIRM" + a UID
+  const isClear = up.startsWith('CSAN');                   // clear-scan barcode = "CSAN" + a UID
+
+  // a CSAN barcode clears the current (wrong) scan, from anywhere — same as the Clear scan button
+  if(isClear){ clearScan(); return; }
+
+  // model-change qty step: scanning the FIRM barcode == pressing Confirm
+  if(st.mode==='ModelChange' && st.state==='ConfirmingQty'){
+    if(isFirm){ render(await api('/api/session/qty/confirm')); }
+    else { $('scanHint').textContent = 'Scan FIRM to confirm the qty / FIRM ဖတ်၍ အရေအတွက် အတည်ပြုပါ.'; }
+    return;
+  }
+
+  // reel scan = two scans (part number, then UID) — parts-change reels AND full-scan/model-change feeders
+  if(st.state === 'AwaitingOldReel' || st.state === 'AwaitingNewReel' || st.state === 'Scanning'){
+    if(reelBuf === null){
+      // PART slot: a UID / badge / FIRM scanned here is a mis-scan — reject (no interlock), just re-prompt
+      if(isFirm || isUid){ $('scanHint').textContent = 'That looks like a UID/badge — scan the PART number / ၎င်းသည် UID/ကတ် — ပါ့တ်နံပါတ် ဖတ်ပါ.'; return; }
+      reelBuf = val;
+      pendingScan = { machine: st.machine, feeder: st.feeder, part: val };
+      $('scanHint').textContent = `part/ပါ့တ် ${val} — now scan the UID / ယခု UID ဖတ်ပါ`;
+      render(window._state);   // show the scanned part in its row immediately, before the UID scan
+      return;
+    }
+    // UID slot: a part number scanned here (doesn't end with %) is a mis-scan — keep the part, re-prompt
+    if(isFirm){ $('scanHint').textContent = 'Scan the reel UID / ရီးလ် UID ဖတ်ပါ.'; return; }
+    if(!isUid){ $('scanHint').textContent = `That looks like a part number — scan the UID for ${reelBuf} / ၎င်းသည် ပါ့တ် — UID ဖတ်ပါ.`; return; }
+    const part = reelBuf; reelBuf = null; pendingScan = null; $('scanHint').textContent = '';
+    render(await api('/api/session/reel', {partNumber:part, uid:val}));
+  } else if(st.state === 'AwaitingQuantity'){
+    // parts-change qty: qty is pulled from parts control (or keyed manually); scan FIRM to confirm.
+    if(isFirm){ confirmChangeQty(); return; }
+    if(/^\d+$/.test(val)){ pcQtyVal = val; const b=$('pcQty'); if(b) b.value=val; $('scanHint').textContent = `qty/အရေအတွက် ${val} — scan FIRM to confirm / FIRM ဖတ်၍ အတည်ပြုပါ.`; return; }
+    $('scanHint').textContent = 'Key the qty then scan FIRM / အရေအတွက်ရိုက်၍ FIRM ဖတ်ပါ.';
+  } else if(st.state === 'AwaitingCorrectedQty'){
+    render(await api('/api/session/qty/correct', {quantity:parseInt(val)||0}));   // supervisor keys the corrected qty
+  } else {
+    render(await api('/api/session/badge', {value:val}));   // badge (or interlock release / recount select)
+  }
+});
+
+// ---- audio cues (spoken via the browser, out the line-PC speaker) ----
+let _audInit=false,_audPassed=0,_audInterlock=false,_audComplete=false,_ac=null;
+function say(t){ try{ if('speechSynthesis' in window){ speechSynthesis.cancel(); const u=new SpeechSynthesisUtterance(t); u.rate=1.05; u.volume=1; speechSynthesis.speak(u);} }catch(e){} }
+function beep(freq,dur,vol){ try{ _ac=_ac||new (window.AudioContext||window.webkitAudioContext)(); const o=_ac.createOscillator(),g=_ac.createGain(); o.connect(g); g.connect(_ac.destination); o.type='sine'; o.frequency.value=freq; g.gain.setValueAtTime(vol||0.25,_ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001,_ac.currentTime+(dur||0.15)); o.start(); o.stop(_ac.currentTime+(dur||0.15)); }catch(e){} }
+function audioCues(st){
+  const active = st.mode && st.mode!=='None';
+  if(!active){ _audInit=false; _audPassed=0; _audInterlock=false; _audComplete=false; return; }
+  const passed = (st.checklist||[]).filter(i => i.status==='Released' || (i.status==='Matched' && (st.mode!=='ModelChange' || i.qty==='Confirmed' || i.qty==='Corrected'))).length;
+  const interlocked = st.state==='Interlocked' || st.state==='PartInterlock' || st.state==='QtyInterlock';
+  const complete = st.state==='Complete';
+  if(_audInit){
+    if(passed > _audPassed){ beep(880,0.10); say('check pass'); }
+    if(interlocked && !_audInterlock){ beep(300,0.4,0.3); say('check fail'); }
+    if(complete && !_audComplete){ beep(1046,0.15); say('check complete'); }
+  }
+  _audInit=true; _audPassed=passed; _audInterlock=interlocked; _audComplete=complete;
+}
+
+// ---- big full-screen step overlay (for operators standing far from the monitor) ----
+function toggleBig(){ bigEnabled = !bigEnabled; localStorage.setItem('pvsBig', bigEnabled?'1':'0'); refresh(); }
+function stepPass(st){
+  return (st.checklist||[]).filter(i => i.status==='Released' ||
+    (i.status==='Matched' && (st.mode!=='ModelChange' || i.qty==='Confirmed' || i.qty==='Corrected'))).length;
+}
+function showBig(cls, main, sub, part){
+  const el = $('bigStep');
+  el.className = cls;
+  el.innerHTML = (sub?`<div class="bsub">${sub}</div>`:'') + `<div class="bmain">${main}</div>` + (part?`<div class="bpart">${part}</div>`:'');
+  el.style.display = 'flex';
+  // show the cancel/false-alarm button only on an actionable step (scan or wrong-scan), not on OK/complete flashes
+  $('bigCancel').style.display = (cls==='go' || cls==='bad') ? 'block' : 'none';
+  // During a CHECK the big-screen button shows the list + continues (never cancels); only a false parts-out cancels.
+  const _m=(window._state||{}).mode;
+  $('bigCancel').textContent = (_m==='ModelChange'||_m==='ShiftChange'||_m==='LotEnd')
+      ? '☰ Show list — continue / စာရင်းပြ' : '✖ FALSE ALARM / Cancel — ပယ်ဖျက်';
+  $('bigConfirm').style.display = 'none';   // updateBigStep re-shows it only on the FIRM confirm step
+}
+function hideBig(){ $('bigStep').style.display='none'; $('bigCancel').style.display='none'; $('bigConfirm').style.display='none'; }
+// Dismiss a (false) parts-out / cancel the current task from the big overlay.
+function bigCancelAction(){
+  const st = window._state || {};
+  // False parts-out (Mode B): dismiss it.
+  if(st.mode==='PartsChange' && (st.state==='AwaitingOldReel' || st.state==='AwaitingNewReel')){ doSkip(); return; }
+  // A model-change / shift / lot-end CHECK: never wipe it from the big screen. Just hide the overlay so the
+  // operator can see the checklist + machine tabs and CONTINUE — progress stays. Cancelling a check needs the
+  // explicit Cancel button (which confirms first).
+  if(st.mode==='ModelChange' || st.mode==='ShiftChange' || st.mode==='LotEnd'){ bigEnabled=false; updateBigStep(st); focusScan(); return; }
+  doCancel();
+}
+// Backup confirm (when the FIRM scan won't register): confirm the known qty, or prompt for it if unknown.
+function bigConfirmAction(){
+  const st = window._state || {};
+  if(st.mode==='ModelChange' && st.state==='ConfirmingQty'){ confirmQty(); return; }
+  if(st.state!=='AwaitingQuantity') return;
+  let q = (pcQtyVal!=null && String(pcQtyVal).trim()!=='') ? String(pcQtyVal).trim()
+        : (st.prefillQuantity!=null ? String(st.prefillQuantity) : '');
+  if(q==='' || isNaN(parseInt(q))){
+    const v = prompt('Enter the NEW reel quantity / ရီးလ်အသစ်၏ အရေအတွက်ရိုက်ပါ:');
+    if(v==null) return;
+    q = v.trim();
+    if(q==='' || isNaN(parseInt(q))) return;
+  }
+  pcQtyVal = String(parseInt(q));
+  confirmChangeQty();
+}
+// ---- lot progress / end-of-lot ----
+// Dismissal is stored per-lot in localStorage so pressing OK STAYS dismissed across page reloads / kiosk
+// refreshes (a page var would re-show the alarm on every reload). A different lot re-arms automatically.
+function lotDismissedFor(lotNo){ return (localStorage.getItem('pvsLotDismissed')||'') === lotNo; }
+function updateLot(l){
+  window._lot = l;
+  const card=$('lotCard'), flash=$('lotFlash');
+  const typingLot = document.activeElement && (document.activeElement.id==='lotQty' || document.activeElement.id==='lotBadge');
+  if(!l || !l.lotNo || l.remaining==null || l.effectiveTarget==null){
+    card.style.display='none'; if(!typingLot) flash.style.display='none'; return;
+  }
+  const rem=l.remaining, warn=l.endingSoon, done=rem<=0;
+  card.style.display='block'; card.className = 'card' + (done?' done':(warn?' warn':''));
+  if(done){
+    // Lot COMPLETE — calm green state, not a permanent red alarm. Points to where to set the next lot.
+    card.innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>`
+      + `<div class="big" style="color:var(--ok)">✅ done</div>`
+      + `<div class="unit">lot complete / လော့ပြီး — set the next lot on ⚙ Model &amp; lot</div>`
+      + `<div class="prog">produced ${l.producedBoards} / target ${l.effectiveTarget}</div>`;
+  } else {
+    card.innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>`
+      + `<div class="big">${rem}</div><div class="unit">boards to lot end / LOT ကုန်ရန် ဘုတ်</div>`
+      + `<div class="prog">produced ${l.producedBoards} / target ${l.effectiveTarget}${l.extra?(' · +'+l.extra+' added'):''}</div>`;
+  }
+  if(warn){
+    if(!lotDismissedFor(l.lotNo) && !typingLot){
+      $('lfLeft').textContent = Math.max(0,rem); $('lfLot').textContent = l.lotNo;
+      $('lfProd').textContent = `produced ${l.producedBoards} / target ${l.effectiveTarget}`;
+      $('lfHead').textContent = done ? 'LOT COMPLETE' : 'boards to LOT END';
+      flash.style.display='flex';
+    } else if(!typingLot) flash.style.display='none';
+  } else { flash.style.display='none'; }
+}
+function dismissLotFlash(){ const ln=(window._lot&&window._lot.lotNo)||''; if(ln) localStorage.setItem('pvsLotDismissed', ln); $('lotFlash').style.display='none'; }
+async function addLotQty(){
+  const q = parseInt($('lotQty').value||''); const b = $('lotBadge').value.trim();
+  if(isNaN(q)||q<=0){ $('lotMsg').textContent='Enter a qty / အရေအတွက်ရိုက်ပါ.'; return; }
+  if(!b){ $('lotMsg').textContent='Scan a SUPERVISOR badge / ကြီးကြပ်ကတ်ဖတ်ပါ.'; $('lotBadge').focus(); return; }
+  const r = await api('/api/lot/addqty', {qty:q, badge:b});
+  $('lotMsg').textContent = r.message; $('lotQty').value=''; $('lotBadge').value=''; refresh();
+}
+
+// ---- lot selection (dropdown + set produced) moved to /setup.html; this page only DISPLAYS lot progress via updateLot ----
+
+function updateBigStep(st){
+  const el = $('bigStep');
+  $('bigToggle').className = bigEnabled ? 'on' : '';
+  if(!bigEnabled){ hideBig(); return; }
+  const now = Date.now();
+
+  // completion flashes take priority
+  if(pcJustDone && (now-pcJustDone)<3000){ showBig('ok','✅ CHANGE OK','လဲပြီးပါပြီ',''); return; }
+  const active = st.mode && st.mode!=='None';
+  if(!active){ hideBig(); bigLastPass=0; return; }
+  if(st.state==='Complete'){ showBig('ok','✅ COMPLETE','ပြီးပါပြီ',''); return; }
+
+  // supervisor-typed quantity step happens at the PC — don't cover the screen
+  if(st.state==='AwaitingCorrectedQty'){ hideBig(); return; }
+
+  // brief per-scan OK flash between steps
+  const passed = stepPass(st);
+  if(passed > bigLastPass) bigOkUntil = now + 1000;
+  bigLastPass = passed;
+  if(now < bigOkUntil){ showBig('ok','✓ OK','',''); return; }
+
+  // wrong scan
+  if(st.state==='Interlocked' || st.state==='PartInterlock'){ showBig('bad','✋ WRONG / မှား','Supervisor clear & rescan','ကြီးကြပ်ရှင်း၍ ပြန်ဖတ်'); return; }
+  if(st.state==='QtyInterlock'){ showBig('bad','QTY? / အရေအတွက်','Supervisor / ကြီးကြပ်',''); return; }
+
+  const loc = (st.machine!=null) ? ('M'+st.machine+' · F'+st.feeder) : '';
+  let main='', sub='', part='';
+  if(st.mode==='PartsChange'){
+    if(st.state==='AwaitingBadge'){ main='BADGE IN'; sub='ကတ်ဖတ်ပါ · '+loc+' OUT'; }
+    else if(st.state==='AwaitingOldReel'){ main = reelBuf?'SCAN OLD UID':'SCAN OLD REEL'; sub=(reelBuf?'အဟောင်း UID':'ရီးလ်အဟောင်း')+' · '+loc; part=reelBuf?'':st.expectedPart; }
+    else if(st.state==='AwaitingNewReel'){ main = reelBuf?'SCAN NEW UID':'SCAN NEW REEL'; sub=(reelBuf?'အသစ် UID':'ရီးလ်အသစ်')+' · '+loc; part=reelBuf?'':(st.oldReelPart||st.expectedPart); }
+    else if(st.state==='AwaitingQuantity'){ const q=(pcQtyVal!=null&&String(pcQtyVal).trim()!=='')?String(pcQtyVal).trim():(st.prefillQuantity!=null?String(st.prefillQuantity):''); main='SCAN FIRM'; sub=(st.newReelPart||st.expectedPart||loc)+' · '+(q!==''?('Qty/SL '+q+' — FIRM သို့ OK'):'key qty / အရေအတွက်ရိုက်ပါ'); part=(q!==''?q:''); }
+  } else if(st.mode==='ShiftChange'||st.mode==='LotEnd'||st.mode==='ModelChange'){
+    if(st.state==='AwaitingBadge'){ main='BADGE IN'; sub='ကတ်ဖတ်၍ စတင်ပါ'; }
+    else if(st.state==='Scanning'){ main = reelBuf?'SCAN UID':('SCAN F'+st.feeder); sub=(reelBuf?'UID ဖတ်ပါ':'ရီးလ်ဖတ်ပါ')+' · Machine/စက် '+st.machine; part=reelBuf?'':st.expectedPart; }
+    else if(st.state==='ConfirmingQty'){ main='SCAN FIRM'; sub='Qty/SL '+(st.prefillQuantity ?? '—')+' · အတည်ပြု'; }
+  }
+  if(!main){ hideBig(); return; }
+  showBig('go', main, sub, part);
+  // Backup OK button on the FIRM confirm step — if the FIRM scan doesn't register, the operator presses OK.
+  const confirmStep = (st.mode==='PartsChange' && st.state==='AwaitingQuantity') ||
+                      (st.mode==='ModelChange' && st.state==='ConfirmingQty');
+  $('bigConfirm').style.display = confirmStep ? 'block' : 'none';
+}
+
+function render(st){
+  window._state = st;
+  if(st.mode==='None'){ reelBuf=null; pendingScan=null; }   // no task -> drop any half-entered scan
+  // During an active task (or the Change-OK flash), hide the model/setup card so the task fills the top of
+  // the screen and the operator sees the whole parts-change flow without scrolling.
+  const taskUp = (st.mode && st.mode!=='None') || (pcJustDone && (Date.now()-pcJustDone)<3000);
+  $('setup').style.display = taskUp ? 'none' : 'block';
+  audioCues(st);
+  const chip = $('stateChip');
+  const interlocked = st.state === 'Interlocked' || st.state === 'PartInterlock' || st.state === 'QtyInterlock';
+  chip.className = 'state ' + (interlocked ? 'interlock' : (st.state==='Idle'?'idle':'ok'));
+  chip.textContent = st.mode==='None' ? 'idle' : `${st.mode} · ${st.state}`;
+
+  // Keep the operator's name visible for the whole task (until it completes / is cancelled).
+  const active = st.mode && st.mode!=='None' && st.state!=='Complete' && st.state!=='Skipped';
+  $('opName').textContent = (active && st.operator) ? st.operator : '';
+
+  $('interlock').className = 'banner' + (interlocked ? ' red' : '');
+  if(interlocked){
+    const tail = st.state==='QtyInterlock'
+      ? '  — scan a SUPERVISOR badge, then key the correct qty / ကြီးကြပ်ကတ်ဖတ်၍ မှန်သောအရေအတွက်ရိုက်ပါ.'
+      : '  — WRONG scan: scan a SUPERVISOR badge to clear, then rescan / မှားဖတ်: ကြီးကြပ်ကတ်ဖတ်၍ ရှင်း၍ ပြန်ဖတ်ပါ.';
+    $('interlock').textContent = '⛔ ' + (st.message || 'Interlocked') + tail;
+  }
+
+  // pending parts-out banner (only meaningful when no task is active)
+  const pend = st.pending || [];
+  const showPend = pend.length && (st.mode==='None');
+  $('pending').className = 'banner' + (showPend ? ' amber' : '');
+  if(showPend){
+    const list = pend.map(p=>`M${p.machine}·${p.feeder}${p.probableFalse?' ⚠likely-false':''}`).join('   ');
+    const anyFalse = pend.some(p=>p.probableFalse);
+    $('pending').textContent = `⚠ ${pend.length} parts-out waiting / ပစ္စည်းကုန် စောင့်ဆိုင်း: ${list}  — badge in to handle the oldest / ကတ်ဖတ်၍ အဟောင်းဆုံးကို ကိုင်တွယ်ပါ.` +
+      (anyFalse ? '  (⚠ = ကုန်ကြမ်းကျန်နေ — အမှားဖြစ်နိုင် / probably a false call.)' : '');
+  }
+
+  // probable false parts-out warning during a machine-triggered change (inventory still shows qty on this feeder)
+  const showFalse = st.mode==='PartsChange' && st.probableFalse &&
+    ['AwaitingBadge','AwaitingOldReel','AwaitingNewReel','AwaitingQuantity'].includes(st.state);
+  $('falseCall').className = 'banner' + (showFalse ? ' amber' : '');
+  $('falseCall').textContent = showFalse
+    ? `⚠ LIKELY FALSE parts-out / အမှားဖြစ်နိုင် — inventory shows ~${Number(st.feederRemaining||0).toLocaleString()} left on feeder ${st.feeder} (ကုန်ကြမ်း ~${Number(st.feederRemaining||0).toLocaleString()} ကျန်). If the reel isn't empty, press Skip / ရီးလ်မကုန်သေးလျှင် Skip နှိပ်ပါ (jam / ပစ္စည်းညပ်).`
+    : '';
+
+  let prompt = 'Waiting… / စောင့်ဆိုင်းနေသည်…';
+  if(st.mode==='PartsChange'){
+    const loc = `Machine/စက် ${st.machine} · feeder/ဖီဒါ ${st.feeder}`;
+    if(st.state==='AwaitingBadge') prompt = `⚠ ${loc} OUT / ကုန် — badge in to handle / ကတ်ဖတ်၍ ကိုင်တွယ်ပါ.`;
+    else if(st.state==='AwaitingOldReel') prompt = `${loc}: scan the EMPTY reel / ရီးလ်အဟောင်း(ကုန်) ဖတ်ပါ — expect/လိုအပ် ${st.expectedPart}.`;
+    else if(st.state==='AwaitingNewReel') prompt = `${loc}: scan the NEW reel / ရီးလ်အသစ် ဖတ်ပါ (ပါ့တ်၊ ပြီး UID).`;
+    else if(st.state==='AwaitingQuantity') prompt = `${loc}: ${st.prefillQuantity!=null?('qty/အရေအတွက် = '+st.prefillQuantity+' — '):''}confirm & scan FIRM / အတည်ပြု၍ FIRM ဖတ်ပါ.`;
+    else if(st.state==='Interlocked') prompt = `${loc}: mismatch — supervisor release required / မကိုက်ညီ — ကြီးကြပ်ဖွင့်ပေးရန်လို.`;
+    else if(st.state==='Complete') prompt = `✅ ${loc} change complete / လဲပြီးပါပြီ.`;
+    else if(st.state==='Skipped') prompt = `${loc} skipped / ကျော်လိုက်သည် (အမှား).`;
+  } else if(st.mode==='ShiftChange' || st.mode==='LotEnd'){
+    if(st.state==='AwaitingBadge') prompt = 'Badge in to start the check / ကတ်ဖတ်၍ စစ်ဆေးမှု စတင်ပါ.';
+    else if(st.state==='Scanning') prompt = `Scan feeder/ဖီဒါ ${st.feeder} on machine/စက် ${st.machine} — expect/လိုအပ် ${st.expectedPart}.`;
+    else if(st.state==='Complete') prompt = '✅ All feeders checked / ဖီဒါအားလုံး စစ်ပြီး.';
+  } else if(st.mode==='ModelChange'){
+    if(st.state==='AwaitingBadge') prompt = 'Badge in to start the model-change check / ကတ်ဖတ်၍ မော်ဒယ်ပြောင်းစစ်ဆေးမှု စတင်ပါ.';
+    else if(st.state==='Scanning') prompt = `Scan feeder/ဖီဒါ ${st.feeder} on machine/စက် ${st.machine} — expect/လိုအပ် ${st.expectedPart}.`;
+    else if(st.state==='ConfirmingQty') prompt = `Feeder/ဖီဒါ ${st.feeder}: qty/အရေအတွက် = ${st.prefillQuantity ?? 'n/a'}. Confirm or flag / အတည်ပြု သို့ အမှားပြပါ.`;
+    else if(st.state==='QtyInterlock') prompt = `Feeder/ဖီဒါ ${st.feeder}: qty not confirmed — supervisor required / အရေအတွက်မအတည်ပြုရသေး — ကြီးကြပ်လို.`;
+    else if(st.state==='AwaitingCorrectedQty') prompt = `Supervisor: key the correct qty for feeder/ဖီဒါ ${st.feeder} / ကြီးကြပ်: မှန်သောအရေအတွက် ရိုက်ထည့်ပါ.`;
+    else if(st.state==='Complete') prompt = '✅ Model change complete / မော်ဒယ်ပြောင်းပြီး.';
+  } else if(st.mode==='None'){ prompt = 'No active task — waiting for a parts-out, or start a check / အလုပ်မရှိ — ပစ္စည်းကုန်ကို စောင့်ပါ သို့ စစ်ဆေးမှုစတင်ပါ.'; }
+  $('prompt').textContent = prompt;
+
+  // Guided parts-change: stepwise rows with a flashing arrow on the NEXT action; each row populates as it's
+  // scanned; on completion it flashes "CHANGE OK" for ~3s then returns to wait.
+  const pcd = $('pcDetail');
+  const nowMs = Date.now();
+  const pcActive = st.mode==='PartsChange' && ['AwaitingOldReel','AwaitingNewReel','AwaitingQuantity','Interlocked'].includes(st.state);
+  const typingQty = document.activeElement && document.activeElement.id==='pcQty';  // don't rebuild mid-type
+  if(pcJustDone && (nowMs - pcJustDone) < 3000 && !pcActive){
+    pcd.style.display='block';
+    pcd.innerHTML = `<div class="pcok">✅ CHANGE OK<br><span style="font-size:24px">လဲပြီးပါပြီ</span></div>`;
+  } else if(pcActive && !typingQty){
+    pcJustDone = 0;
+    const S = st.state;
+    if(S==='AwaitingQuantity'){ if(pcQtyVal===null) pcQtyVal = (st.prefillQuantity!=null? String(st.prefillQuantity):''); }
+    else if(S!=='Interlocked'){ pcQtyVal = null; }
+    const kv = (k,v)=>`<span class="val"><span class="k">${k}</span>${(v==null||v==='')?'—':v}</span>`;
+    const step = (mk,cls,label,vals,act)=>`<div class="pcstep ${cls}"><div class="mk">${mk}</div><div class="lbl">${label}</div><div>${vals}${act?`<span class="act">${act}</span>`:''}</div></div>`;
+
+    let rows = step('◎','done','Feeder / ဖီဒါ '+st.feeder, kv('Machine / စက်',st.machine)+kv('Part / ပါ့တ်',st.expectedPart), '');
+
+    const oActive = S==='AwaitingOldReel';
+    const oDone = st.oldReelPart!=null && !oActive;
+    const oPart = (oActive && reelBuf) ? reelBuf : st.oldReelPart;
+    rows += step(oDone?'✓':(oActive?'►':'②'), oDone?'done':(oActive?'active':'pending'), 'Old reel / ရီးလ်အဟောင်း',
+      kv('Part / ပါ့တ်',oPart)+kv('UID',(oActive&&reelBuf)?'…':st.oldReelUid),
+      oActive ? (reelBuf?'SCAN OLD REEL UID<br>ရီးလ်အဟောင်း UID ဖတ်ပါ':'SCAN OLD REEL PART<br>ရီးလ်အဟောင်း ပါ့တ် ဖတ်ပါ') : '');
+
+    const nActive = S==='AwaitingNewReel';
+    const nDone = st.newReelPart!=null && S==='AwaitingQuantity';
+    const nPart = (nActive && reelBuf) ? reelBuf : st.newReelPart;
+    rows += step(nDone?'✓':(nActive?'►':'③'), nDone?'done':(nActive?'active':'pending'), 'New reel / ရီးလ်အသစ်',
+      kv('Part / ပါ့တ်',nPart)+kv('UID',(nActive&&reelBuf)?'…':st.newReelUid),
+      nActive ? (reelBuf?'SCAN NEW REEL UID<br>ရီးလ်အသစ် UID ဖတ်ပါ':'SCAN NEW REEL PART<br>ရီးလ်အသစ် ပါ့တ် ဖတ်ပါ') : '');
+
+    const qActive = S==='AwaitingQuantity';
+    let qVals;
+    if(qActive){
+      qVals = `<span class="val"><span class="k">Qty / အရေအတွက်</span>`
+        + `<input id="pcQty" type="number" inputmode="numeric" value="${pcQtyVal}" oninput="pcQtyVal=this.value" style="width:110px;text-align:right;font-size:17px"> `
+        + `<button class="pri" style="padding:5px 12px" onclick="confirmChangeQty()">✔</button></span>`;
+    } else { qVals = kv('Qty / အရေအတွက်', st.quantity); }
+    rows += step(qActive?'►':'④', qActive?'active':'pending', 'Quantity / အရေအတွက်', qVals, qActive?'SCAN FIRM<br>FIRM ဖတ်၍ အတည်ပြုပါ':'');
+
+    pcd.style.display='block';
+    pcd.innerHTML = `<div class="pcsteps">${rows}</div>`;
+  } else if(!pcActive){ pcd.style.display='none'; pcd.innerHTML=''; if(st.mode!=='PartsChange') pcQtyVal=null; }
+
+  // qty confirm/reject buttons only while confirming a model-change feeder's quantity
+  $('qtyRow').style.display = (st.mode==='ModelChange' && st.state==='ConfirmingQty') ? 'flex' : 'none';
+  // feedback line: show the app's last message when it isn't the interlock banner
+  $('feedback').textContent = (!interlocked && st.message) ? st.message : '';
+
+  // checklist for full-scan / model-change modes — split into per-machine tabs (the full list is long)
+  const cl = $('checklistCard');
+  if(st.checklist && st.checklist.length){
+    cl.style.display='block';
+    const isGreen = i => i.status==='Released' || (i.status==='Matched' && (st.mode!=='ModelChange' || i.qty==='Confirmed' || i.qty==='Corrected'));
+    const machines = [...new Set(st.checklist.map(i=>i.machine))].sort((a,b)=>a-b);
+    // auto-follow the current feeder's machine; a manual tab click sticks until the scan moves on
+    const curM = st.machine;
+    if(curM!=null && curM!==lastCurMachine){ selMachine=null; lastCurMachine=curM; }
+    const activeM = (selMachine!=null && machines.includes(selMachine)) ? selMachine : (curM!=null?curM:machines[0]);
+    // tab bar with per-machine progress
+    const confirmed = st.confirmed || [];
+    const mt=$('mtabs'); mt.innerHTML='';
+    machines.forEach(mn=>{
+      const items = st.checklist.filter(i=>i.machine===mn);
+      const done = items.filter(isGreen).length;
+      const allDone = done===items.length;
+      const saved = confirmed.includes(mn);
+      const bad = items.some(i=>i.status==='Mismatched');
+      const cls = (mn===activeM?'active':'') + (bad?' bad':(allDone?' done':''));
+      const tag = saved?' 💾':(allDone?' ✔':'');
+      mt.insertAdjacentHTML('beforeend', `<button class="mtab ${cls}" onclick="selectTab(${mn})">M${mn} <small>${done}/${items.length}${tag}</small></button>`);
+    });
+    // per-machine "confirm & save" once the active machine is fully done
+    const activeItems = st.checklist.filter(i=>i.machine===activeM);
+    const activeDone = activeItems.length>0 && activeItems.every(isGreen);
+    const mcDiv = $('machineConfirm');
+    if(confirmed.includes(activeM)){ mcDiv.style.display='block'; mcDiv.innerHTML = `<span class="muted">💾 Machine/စက် ${activeM} saved / သိမ်းပြီး.</span>`; }
+    else if(activeDone){ mcDiv.style.display='block'; mcDiv.innerHTML = `<button class="pri" onclick="confirmMachine(${activeM})">✔ Confirm &amp; save / အတည်ပြု၍ သိမ်း — စက် ${activeM}</button>`; }
+    else { mcDiv.style.display='none'; mcDiv.innerHTML=''; }
+    // rows for the active machine only
+    const tb=$('checklist'); tb.innerHTML='';
+    st.checklist.filter(i=>i.machine===activeM).forEach(i=>{
+      const qtyDone = (i.qty==='Confirmed' || i.qty==='Corrected');
+      let cls, lbl;
+      if(i.status==='Mismatched'){ cls='red'; lbl='mismatch / မကိုက်ညီ'; }
+      else if(i.status==='Released'){ cls='green'; lbl='released / ဖွင့်ပြီး'; }
+      else if(i.status==='Matched'){
+        if(st.mode==='ModelChange' && !qtyDone){ cls='amber'; lbl='check qty / အရေအတွက်စစ်'; }
+        else { cls='green'; lbl='pass / အောင်'; }
+      } else { cls='blue'; lbl='pending / စောင့်'; }
+      const cur = (i.machine===st.machine && i.feeder===st.feeder && st.state!=='Complete' && st.mode!=='None')?' cur':'';
+      const showScan = (pendingScan && pendingScan.machine===i.machine && pendingScan.feeder===i.feeder && !i.scanned) ? pendingScan.part : i.scanned;
+      const q = (i.confirmedQty!=null)?i.confirmedQty:(i.currentQty!=null?i.currentQty:null);
+      const qtag = i.qty==='Corrected'?' ✎':(i.qty==='Confirmed'?' ✓':'');
+      const qtyCell = q==null?'':`${q}${qtag}`;
+      tb.insertAdjacentHTML('beforeend',
+        `<tr class="${cls}${cur}" style="cursor:pointer" title="click to clear & rescan this feeder" onclick="clearFeeder(${i.machine},${i.feeder})"><td>M${i.machine}</td><td>${i.feeder}</td><td>${i.expected}</td>
+         <td>${showScan||'—'}</td><td>${i.uid||'—'}</td><td><span class="pill ${cls}">${lbl}</span></td><td>${qtyCell}</td></tr>`);
+    });
+    const totalPassed = st.checklist.filter(isGreen).length;
+    $('progress').textContent = `${totalPassed} / ${st.checklist.length} passed`;
+  } else { cl.style.display='none'; $('mtabs').innerHTML=''; }
+
+  updateBigStep(st);   // drive the big full-screen step overlay
+}
+
+async function refresh(){
+  try{
+    render(await (await fetch('/api/session')).json());
+    // read-only model indicator in the header (set it on /setup.html)
+    const cm = await (await fetch('/api/currentmodel')).json();
+    if(cm.model){
+      const mismatch = cm.manual && cm.verify==='mismatch';
+      $('model').textContent = cm.model + ' · ' + cm.side + ' side'
+        + (cm.auto?' · auto':(cm.manual?(mismatch?' · ⛔ mismatch':' · set'):''));
+    } else { $('model').textContent = 'no model selected'; }
+    focusScan();
+  }catch(e){}
+
+  // docked exhaust panel — now lot-aware: reels that finish the lot drop to the bottom ("✓ lasts lot"),
+  // and a part whose ISSUED reels won't cover the lot flashes orange ("⚠ request", lead time).
+  try{
+    const ex = await (await fetch('/api/exhaust')).json();
+    // rank: material-short first, then reels that WON'T last the lot (soonest), then lasts-lot reels last.
+    const ranked = (ex.rows||[]).slice().sort((a,b)=>{
+      if(!!a.underIssued !== !!b.underIssued) return a.underIssued?-1:1;
+      if(!!a.lastsLot !== !!b.lastsLot) return a.lastsLot?1:-1;
+      return (a.minutes==null?1e9:a.minutes)-(b.minutes==null?1e9:b.minutes);
+    });
+    const rows = ranked.slice(0,6);
+    // headline reflects the lot
+    const hd = $('exhMiniHd');
+    if(ex.lotTracked && ex.changesBeforeLotEnd!=null && ranked.length){
+      const n = ex.changesBeforeLotEnd, bd = ex.boardsToLotEnd;
+      const short = (ex.underIssuedParts||[]).length;
+      if(short>0){ hd.className='hd warnhd'; hd.textContent = `⚠ ${short} part${short>1?'s':''} short for this lot · request now`; }
+      else if(n>0){ hd.className='hd'; hd.textContent = `⏱ ${n} reel${n>1?'s':''} to change before lot end · ${bd} boards to go`; }
+      else { hd.className='hd okhd'; hd.textContent = `✓ all reels last this lot · ${bd} boards to go`; }
+    } else { hd.className='hd'; hd.textContent = '⏱ Next to run out / နောက်ကုန်မည့်'; }
+    const c = $('exhMiniRows');
+    if(!rows.length){ c.innerHTML = '<div class="loc">no tracked reels yet / မရှိ</div>'; }
+    else c.innerHTML = rows.map(r=>{
+      let cls = r.minutes==null ? '' : (r.minutes<45?'red':(r.minutes<120?'amber':'ok'));
+      let right;
+      if(r.underIssued){ cls='short'; right = `<div class="tm short">⚠ request${r.shortfallBoards!=null?(' · -'+r.shortfallBoards+'bd'):''}</div>`; }
+      else if(r.lastsLot){ cls='ok'; right = `<div class="tm ok">✓ lasts lot</div>`; }
+      else { right = `<div class="tm ${cls}">${r.timeLeft}</div>`; }
+      return `<div class="er ${cls}"><div><div class="pt">${r.part}</div>`
+        + `<div class="loc">M/စက် ${r.machine} · F/ဖီဒါ ${r.feeder} · ${Number(r.remaining).toLocaleString()} pcs/ကျန်</div></div>`
+        + right + `</div>`;
+    }).join('');
+  }catch(e){}
+
+  // lot progress / end-of-lot (display only; lot SELECTION lives on /setup.html)
+  try{ updateLot(await (await fetch('/api/lot')).json()); }catch(e){}
+}
+loadFeeders(); refresh(); setInterval(refresh, 2000);
+$('scan').focus();
+// After clicking anywhere that isn't the dropdown, return focus to the scanner so the next
+// scan lands in the app (buttons/empty space included — the dropdown is the only exception).
+document.body.addEventListener('click', e => {
+  if (['SELECT','OPTION'].includes(e.target.tagName)) return;
+  setTimeout(focusScan, 0);   // after the button's own handler runs
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# build output
+bin/
+obj/
+**/publish*/
+*.user
+
+# local runtime state (per-line PC, never in source)
+*.cred
+db-password.txt
+*.json.bak
+remaining.json
+lot-progress.json
+dpc-state.json
+selected-lot.json
+manual-model.json
+check-status.json
+scan-progress.json
+feedermap-cache.json
+model-cache.json
+downtime.json
+inventory.json
+records/
+
+# agent working area
+agent-drafts/

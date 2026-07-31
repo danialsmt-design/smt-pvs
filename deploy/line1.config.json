@@ -1,0 +1,35 @@
+// PVS Line 1 config — mirrors the LIVE C:\PvsLineApp\line.config.json (refreshed 2026-07-30).
+// Only lineId, lineName, and machines[] differ between lines; everything else is factory-wide.
+// (The app parser allows // comments and trailing commas.)
+{
+  "lineId": 1,
+  "lineName": "LINE1PVS",
+
+  "shiftTimes": [
+    { "name": "Day",   "start": "07:30", "end": "19:30" },
+    { "name": "Night", "start": "19:30", "end": "07:30" }
+  ],
+
+  // COM ports are per-PC and re-number on reboot — discover on THIS PC (see runbook §2).
+  // M4 must be the physically LAST machine on the line (board count + lot progress come off it).
+  "machines": [
+    { "machine": 1, "port": "COM5", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 2, "port": "COM4", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 3, "port": "COM6", "model": "F209", "hasTrayFeeder": true  },
+    { "machine": 4, "port": "COM3", "model": "F209", "hasTrayFeeder": true  }
+  ],
+
+  "serial":   { "baudRate": 9600, "dataBits": 7, "parity": "Even", "stopBits": 1 },
+  "forecast": { "redMinutes": 45, "amberMinutes": 120 },
+
+  // Child boards per panel, by model (one machine cycle = one panel). Wrong value => count off by this factor.
+  "panelBoards": { "L254": 4, "L261": 6, "L264": 6, "L307": 4, "L309": 4, "L311": 4, "L313": 4, "L347": 4 },
+
+  // Shared Parts DB (Parts PC over Tailscale). Password lives in C:\PvsLineApp\db-password.txt, not here.
+  "central": { "server": "100.91.120.113,1433", "database": "ReelPart-New", "userId": "pvs_ro", "password": "" },
+
+  "badge": { "uidPrefix": "9999" },
+
+  "syncStockOuts": true,          // Line 1: balances trusted, writing live remaining to StockOuts.Quantity
+  "writeProductionCount": false   // still off (needs pvs_ro INSERT grant + operator app to stop writing L1 DPC)
+}

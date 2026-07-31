@@ -1,0 +1,36 @@
+// PVS Line 2 config TEMPLATE. Copy to C:\PvsLineApp\line.config.json on the Line 2 PC.
+// TODO before go-live: (1) discover the real COM ports on this PC (runbook §2);
+//   (2) confirm machine F130/F209 layout matches this line; (3) audit ProductBOM for Line 2 (runbook §4).
+// Line 2 runs (per ProductBOM, 2026-07-30): L309 (B), L311 (A & B). All 4 machines populated.
+{
+  "lineId": 2,
+  "lineName": "LINE2PVS",
+
+  "shiftTimes": [
+    { "name": "Day",   "start": "07:30", "end": "19:30" },
+    { "name": "Night", "start": "19:30", "end": "07:30" }
+  ],
+
+  // ⚠ PLACEHOLDER ports copied from Line 1 — DISCOVER the real mapping on the Line 2 PC and edit.
+  // M4 must be the physically LAST machine on the line.
+  "machines": [
+    { "machine": 1, "port": "COM5", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 2, "port": "COM4", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 3, "port": "COM6", "model": "F209", "hasTrayFeeder": true  },
+    { "machine": 4, "port": "COM3", "model": "F209", "hasTrayFeeder": true  }
+  ],
+
+  "serial":   { "baudRate": 9600, "dataBits": 7, "parity": "Even", "stopBits": 1 },
+  "forecast": { "redMinutes": 45, "amberMinutes": 120 },
+
+  // Confirm the factors for THIS line's models (L309, L311). Extras are harmless (only the running model is used).
+  "panelBoards": { "L254": 4, "L261": 6, "L264": 6, "L307": 4, "L309": 4, "L311": 4, "L313": 4, "L347": 4 },
+
+  "central": { "server": "100.91.120.113,1433", "database": "ReelPart-New", "userId": "pvs_ro", "password": "" },
+
+  "badge": { "uidPrefix": "9999" },
+
+  // Both OFF for the pilot (runbook §8). Only turn on once balances/DPC ownership are arranged for this line.
+  "syncStockOuts": false,
+  "writeProductionCount": false
+}
