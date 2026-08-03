@@ -260,12 +260,26 @@ app.MapGet("/api/staged", (LineService line) =>
 // The machine's OWN completed-PWB counter, read live via the Sony C1M production report (authoritative;
 // survives PVS being off). POST triggers a fresh read (optionally for one ?machine=N), waits for the serial
 // reports to stream back, and returns the counts. Read-only on the machine (C1M000 does NOT clear).
-app.MapPost("/api/machinecount", async (LineService line, int? machine) =>
+// ?pwb=<name>  request the summary for one PWB file (name WITHOUT extension); ?pwb=auto uses each
+//              machine's own loaded program name. Omit for the Entire Machine Status.
+// ?waitMs=N    how long to let the report stream back (default 10s; the channel's own timeout is 8s).
+app.MapPost("/api/machinecount", async (LineService line, int? machine, string? pwb, int? waitMs) =>
 {
     var now = DateTime.Now;
     var targets = line.Listeners.Where(l => machine is null || l.Channel.Machine == machine).ToList();
-    foreach (var l in targets) l.Channel.RequestProductionCount(now);
-    await Task.Delay(2000);   // let the C1M report(s) stream back over serial
+    foreach (var l in targets)
+    {
+        var name = pwb;
+        if (string.Equals(pwb, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            // Strip the cell-specific extension (".PW1".."PW4"/".PWB") — the manual wants the name only.
+            var prog = l.Channel.ProgramName;
+            var dot = prog?.LastIndexOf('.') ?? -1;
+            name = dot > 0 ? prog![..dot] : prog;
+        }
+        l.Channel.RequestProductionCount(now, name);
+    }
+    await Task.Delay(waitMs ?? 10000);   // let the C1M report(s) stream back over serial
     return Results.Ok(new
     {
         readAt = DateTime.Now,
@@ -274,9 +288,31 @@ app.MapPost("/api/machinecount", async (LineService line, int? machine) =>
             machine = l.Channel.Machine,
             completedPwbs = l.Channel.CompletedPwbs,
             at = l.Channel.CompletedPwbsAt == default ? (DateTime?)null : l.Channel.CompletedPwbsAt,
-            online = l.Channel.IsOnline
+            online = l.Channel.IsOnline,
+            sent = l.Channel.LastReportCommand,
+            error = l.Channel.LastReportError,
+            program = l.Channel.ProgramName
         }).ToList()
     });
+});
+
+// Board-count reconciliation: PVS's live count vs each machine's OWN counter (C1M). The two fail in
+// opposite ways — PVS misses boards while blind; the machine's counter is reset by the operator at every
+// lot end (SOP) — so comparing them catches both. Observe-and-record only; nothing is auto-corrected.
+app.MapGet("/api/reconcile", (LineService line) =>
+{
+    var svc = line.Reconciler;
+    if (svc is null) return Results.Ok(new { message = "reconciler not ready", runs = Array.Empty<object>() });
+    return Results.Ok(new { intervalMinutes = svc.IntervalMinutes, running = svc.IsRunning, runs = svc.Recent });
+});
+
+// Run a pass NOW (lot start/end, shift change, after a restart or a machine coming back online).
+// Takes ~45s: a C1M report streams for ~30s at 9600 baud.
+app.MapPost("/api/reconcile/run", async (LineService line, string? trigger) =>
+{
+    if (line.Reconciler is null) return Results.Ok(new { message = "reconciler not ready" });
+    var run = await line.Reconciler.RunAsync(string.IsNullOrWhiteSpace(trigger) ? "manual" : trigger!);
+    return Results.Ok(run);
 });
 
 // Manually re-baseline the live inventory from the confirmed reels (feeds the exhaust forecast).

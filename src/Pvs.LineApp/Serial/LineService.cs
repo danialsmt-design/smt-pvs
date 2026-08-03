@@ -38,6 +38,7 @@ public sealed class LineService : IHostedService, IDisposable
 
     public SessionCoordinator? Coordinator { get; private set; }
     public Pvs.LineApp.Runtime.DowntimeService? Downtime { get; private set; }
+    public Pvs.LineApp.Runtime.CounterReconcilerService? Reconciler { get; private set; }
     public Pvs.LineApp.Inventory.FeederReelStore Reels => _reels;
 
     private readonly ConcurrentQueue<LineEvent> _events = new();
@@ -80,6 +81,9 @@ public sealed class LineService : IHostedService, IDisposable
         Downtime = new Pvs.LineApp.Runtime.DowntimeService(this,
             Path.Combine(AppContext.BaseDirectory, "downtime.json"));
         Downtime.Start();
+        Reconciler = new Pvs.LineApp.Runtime.CounterReconcilerService(this,
+            Path.Combine(AppContext.BaseDirectory, "reconcile"), _config.ReconcileMinutes);
+        Reconciler.Start();
         return Task.CompletedTask;
     }
 
@@ -106,6 +110,7 @@ public sealed class LineService : IHostedService, IDisposable
     public Task StopAsync(CancellationToken cancellationToken)
     {
         Downtime?.Dispose();
+        Reconciler?.Dispose();
         foreach (var l in _listeners) l.Dispose();
         _listeners.Clear();
         return Task.CompletedTask;

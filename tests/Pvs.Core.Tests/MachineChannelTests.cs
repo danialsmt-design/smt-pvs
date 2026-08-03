@@ -115,12 +115,54 @@ public class MachineChannelTests
 
     // ---- C1M production-report (machine's own completed-PWB counter) ----
 
+    // SI-F 6.2.2: "C1Mmmm" ALONE = Entire Machine Status. The trailing P belongs to the
+    // "C1MmmmP<data name>" form only — a bare "C1M000P" asks for a PWB file with an empty
+    // name and the real machines reject it with A4E00 (observed live on Line 1, 2026-07-31).
     [Fact]
-    public void RequestProductionCount_sends_C1M000()
+    public void RequestProductionCount_sends_bare_C1M000_for_entire_machine_status()
     {
         var (ch, sent) = Make();
         ch.RequestProductionCount(T0);
-        Assert.Contains(sent, s => s.Contains("C1M000P"));
+        Assert.Contains(sent, s => s.Contains("C1M000") && !s.Contains("C1M000P"));
+        Assert.Equal("C1M000", ch.LastReportCommand);
+    }
+
+    [Fact]
+    public void RequestProductionCount_with_a_pwb_name_uses_the_P_form()
+    {
+        var (ch, sent) = Make();
+        ch.RequestProductionCount(T0, "L307 - B SIDE _Cell4");
+        Assert.Contains(sent, s => s.Contains("C1M000PL307 - B SIDE _Cell4"));
+        Assert.Equal("C1M000PL307 - B SIDE _Cell4", ch.LastReportCommand);
+    }
+
+    [Fact]
+    public void A_refused_C1M_records_the_reject_code_and_ends_the_transfer()
+    {
+        var (ch, _) = Make();
+        ch.RequestProductionCount(T0);
+        Assert.Null(ch.LastReportError);
+
+        ch.Feed(Frame("A4E00"), T0);          // machine refuses
+        Assert.Equal("A4E00", ch.LastReportError);
+        Assert.Null(ch.CompletedPwbs);
+
+        // transfer is over: a later D0 is a normal data message again (e.g. a C3P program reply),
+        // not report content
+        ch.Feed(Frame("D0L307 - B SIDE _Cell4.PW4"), T0);
+        Assert.Equal("L307 - B SIDE _Cell4.PW4", ch.ProgramName);
+    }
+
+    [Fact]
+    public void A_new_request_clears_the_previous_reject_code()
+    {
+        var (ch, _) = Make();
+        ch.RequestProductionCount(T0);
+        ch.Feed(Frame("A4E00"), T0);
+        Assert.Equal("A4E00", ch.LastReportError);
+
+        ch.RequestProductionCount(T0, "L307 - B SIDE _Cell4");
+        Assert.Null(ch.LastReportError);
     }
 
     [Fact]

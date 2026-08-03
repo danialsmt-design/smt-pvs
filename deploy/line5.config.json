@@ -1,0 +1,39 @@
+// PVS Line 5 config TEMPLATE. Copy to C:\PvsLineApp\line.config.json on the Line 5 PC at deploy.
+// Prepared 2026-08-03. Line 5 is a LIVE line (running L307 A-side today).
+// TODO at deploy: (1) confirm COM->machine map on the Line 5 PC (assumed same as Line 1 until confirmed);
+//   (2) set central.server to the Line 5 PC's best path to the Parts PC (LAN 192.168.0.134,1433 if wired to
+//       that subnet, else Tailscale 100.91.120.113,1433); (3) db-password.txt (4-char pvs_ro secret) is copied
+//       from Line 1, NOT stored here; (4) Line 5 runs A-side — L313(A) has NO Line-5 ProductBOM yet (BOM gap).
+{
+  "lineId": 5,
+  "lineName": "LINE5PVS",
+
+  "shiftTimes": [
+    { "name": "Day",   "start": "07:30", "end": "19:30" },
+    { "name": "Night", "start": "19:30", "end": "07:30" }
+  ],
+
+  // PLACEHOLDER ports = Line 1 mapping (Line 2 turned out identical). M4 must be the physically LAST machine.
+  "machines": [
+    { "machine": 1, "port": "COM5", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 2, "port": "COM4", "model": "F130", "hasTrayFeeder": false },
+    { "machine": 3, "port": "COM6", "model": "F209", "hasTrayFeeder": true  },
+    { "machine": 4, "port": "COM3", "model": "F209", "hasTrayFeeder": true  }
+  ],
+
+  "serial":   { "baudRate": 9600, "dataBits": 7, "parity": "Even", "stopBits": 1 },
+  "forecast": { "redMinutes": 45, "amberMinutes": 120 },
+
+  // Line 5 runs L307, L311, L313 (A-side). Extra factors are harmless (only the running model is used).
+  "panelBoards": { "L254": 4, "L261": 6, "L264": 6, "L307": 4, "L309": 4, "L311": 4, "L313": 4, "L347": 4 },
+
+  // Set server to the fastest working path from the Line 5 PC (LAN if wired, else Tailscale). Password stays
+  // empty here; the app reads db-password.txt (copied from Line 1).
+  "central": { "server": "192.168.0.134,1433", "database": "ReelPart-New", "userId": "pvs_ro", "password": "" },
+
+  "badge": { "uidPrefix": "9999" },
+
+  // Pilot: both OFF. Turn on only after the operator-app / DPC handover for Line 5 (like Line 1).
+  "syncStockOuts": false,
+  "writeProductionCount": false
+}

@@ -84,6 +84,14 @@ public sealed class LineConfig
     public bool WriteProductionCount { get; set; }
 
     /// <summary>
+    /// How often (minutes) to read each machine's own production counter (C1M) and reconcile it against
+    /// PVS's board count. The heartbeat matters because the operator RESETS every machine's counter at end
+    /// of lot (SOP): read only after that and the lot's final count is gone, so this bounds the worst-case
+    /// loss to one interval. A read takes ~30s over serial, so don't set this low. 0/absent => 20.
+    /// </summary>
+    public int ReconcileMinutes { get; set; } = 20;
+
+    /// <summary>
     /// Child boards per panel, by model name. One machine cycle (a board-complete / R0) mounts a full
     /// PANEL, so per-cycle consumption of a feeder = ProductBOM.Quantity (per child board) × this factor.
     /// e.g. L307 = 4 (a 4-up panel). Missing/0 => 1 (single board per cycle).

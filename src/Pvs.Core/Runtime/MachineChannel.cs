@@ -67,6 +67,16 @@ public sealed class MachineChannel
     /// <summary>Raised when a fresh completed-PWB count is read from the machine via C1M.</summary>
     public event Action<int>? ProductionCountRead;
 
+    /// <summary>Board-completes (machine cycles = PANELS) this channel has observed since it started.
+    /// PVS's own count — contrast <see cref="CompletedPwbs"/>, the machine's internal counter.</summary>
+    public int BoardsSeen { get; private set; }
+
+    /// <summary>The exact C1M command string last sent — for diagnosing rejects.</summary>
+    public string? LastReportCommand { get; private set; }
+    /// <summary>The machine's rejection/busy acknowledgement to the last C1M request (e.g. <c>A4E00</c>,
+    /// <c>A5E02</c>), or null if the request was not refused. Cleared on each new request.</summary>
+    public string? LastReportError { get; private set; }
+
     private bool _collectingReport;
     private readonly System.Text.StringBuilder _reportBuf = new();
     private DateTime _reportStart;
@@ -79,14 +89,22 @@ public sealed class MachineChannel
     /// acking changes while a report is in flight — real-time parts-out / board-complete handling is untouched —
     /// and it times out after 8s so a stalled transfer reverts to normal.
     /// </summary>
-    public void RequestProductionCount(DateTime now)
+    /// <param name="pwbName">Optional PWB data-file name WITHOUT its extension (e.g.
+    /// <c>L307 - B SIDE _Cell4</c>, from <see cref="ProgramName"/> minus <c>.PW4</c>) to get the summary for
+    /// that one lot. Omit for the Entire Machine Status.</param>
+    public void RequestProductionCount(DateTime now, string? pwbName = null)
     {
         _reportBuf.Clear();
         _collectingReport = true;
         _reportStart = now;
-        // Format is C1M + mmm(000 = read w/o clear) + P + <PWB dataname>. Whole-machine status = empty dataname
-        // after the P separator. (Fig.7-9 of the SI-E2000 manual shows the P is part of the command structure.)
-        _send(SonyFrame.Build("C1M000P"));
+        LastReportError = null;
+        // SI-F manual 6.2.2: "C1Mmmm" ALONE = Entire Machine Status ("If the data name is not added, the
+        // overall machine status is loaded"); "C1MmmmP<data name>" = summary for that one PWB file. The P is
+        // part of the data-name form, NOT a mandatory separator — sending a bare "C1M000P" asks for a PWB
+        // file with an empty name, which the machines reject with A4E00. mmm=000 reads WITHOUT clearing.
+        var cmd = string.IsNullOrWhiteSpace(pwbName) ? "C1M000" : "C1M000P" + pwbName.Trim();
+        LastReportCommand = cmd;
+        _send(SonyFrame.Build(cmd));
     }
 
     /// <summary>Feed a chunk of received characters (e.g. from SerialPort.ReadExisting()).</summary>
@@ -128,6 +146,17 @@ public sealed class MachineChannel
                 else { _reportBuf.Append(data); _send(SonyFrame.Build("A0")); }
                 return;   // report line handled — skip normal processing / A2 ack
             }
+            // The machine refused (A3 / A4xx rejected, A5xx busy-retry) — that ENDS the transfer. Record the
+            // code so a failed read says why instead of silently returning nothing. Falls through to normal
+            // processing (no return) so the message is still seen by everything else.
+            if (!timedOut && (msg.Payload.StartsWith("A4", StringComparison.Ordinal) ||
+                              msg.Payload.StartsWith("A5", StringComparison.Ordinal) ||
+                              msg.Payload.StartsWith("A3", StringComparison.Ordinal)))
+            {
+                LastReportError = msg.Payload;
+                _collectingReport = false;
+            }
+
             if (timedOut)   // salvage whatever arrived (PC is early in the report), then process this msg normally
             {
                 var pc = SonyProductionReport.CompletedPwbs(_reportBuf.ToString());
@@ -167,6 +196,7 @@ public sealed class MachineChannel
 
         if (msg.Kind == MessageKind.BoardComplete)
         {
+            BoardsSeen++;
             Inventory.OnBoardComplete();
             BoardCompleted?.Invoke(now);
         }

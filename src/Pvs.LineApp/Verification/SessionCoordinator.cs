@@ -1281,6 +1281,20 @@ public sealed class SessionCoordinator : IDisposable
     /// <summary>The current production lot number (PONumber) — from the latest DailyProductionCount for the line.</summary>
     public string CurrentLotNo { get { lock (_gate) { return _currentLotNo; } } }
 
+    /// <summary>PVS's own panel count for the CURRENT lot run, or 0 when no lot is being tracked (e.g.
+    /// just after a model change). This is the figure the machine's own C1M counter is reconciled against.</summary>
+    public int CurrentLotPanels
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (string.IsNullOrWhiteSpace(_currentLotNo) || _lotCountFor != _currentLotNo) return 0;
+                return LotPanels();
+            }
+        }
+    }
+
     // A shift-change check is due from 5 min after each shift start (07:35 / 19:35), for a grace window,
     // so it can still run once an in-progress changeover finishes instead of being lost at one instant.
     private static readonly TimeSpan ShiftTriggerGrace = TimeSpan.FromMinutes(60);
