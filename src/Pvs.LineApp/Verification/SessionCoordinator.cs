@@ -671,8 +671,24 @@ public sealed class SessionCoordinator : IDisposable
         foreach (var (key, b) in buckets)
         {
             if (string.IsNullOrWhiteSpace(key.Lot) || string.IsNullOrWhiteSpace(key.Model)) continue;
-            int boards = (int)(b.Panels * _config.PanelBoardsFor(key.Model));
-            if (boards <= 0) continue;
+            int pp = _config.PanelBoardsFor(key.Model);
+            long panelsToWrite = b.Panels;
+
+            // SAFETY NET: a lot's DPC total must never exceed what PVS actually produced for it. Per-board
+            // bucketing never over-counts (one panel per real board); the startup seed ESTIMATES the pre-enable
+            // boards and can over-shoot if the lot count was still settling. So for the CURRENT lot, cap the
+            // write to the room left under produced (produced − already-recorded); the excess stays in the
+            // bucket and only ever writes if real production grows into it. Bounds any seed error to zero.
+            string curLot; long curPanels;
+            lock (_gate) { curLot = _currentLotNo; curPanels = (_lotCountFor == _currentLotNo) ? Math.Max(0, _m4PanelsTotal - _lotAnchorTotal) : 0; }
+            if (string.Equals(key.Lot, curLot, StringComparison.OrdinalIgnoreCase) && curPanels > 0)
+            {
+                int recordedBoards = await _repo.GetProducedBoardsForLotAsync(key.Lot, key.Side, _config.LineId, ct);
+                long roomPanels = Math.Max(0, curPanels - (recordedBoards / pp));
+                if (panelsToWrite > roomPanels) panelsToWrite = roomPanels;
+            }
+            int boards = (int)(panelsToWrite * pp);
+            if (boards <= 0) continue;   // nothing writable within the cap this window (excess held back)
             var entry = new ProductionCountEntry(
                 winEnd.ToString("yyyy-MM-dd"), b.FirstAt.ToString("HH:mm:ss"), winEnd.ToString("HH:mm:ss"),
                 key.Model, key.Side, boards, _config.LineId.ToString(), key.Lot, DpcShift(winEnd), "PVS (auto)", "PVS", Guid.NewGuid().ToString());
@@ -686,7 +702,7 @@ public sealed class SessionCoordinator : IDisposable
                     {
                         if (_dpcPending.TryGetValue(key, out var cur))
                         {
-                            long left = cur.Panels - b.Panels;
+                            long left = cur.Panels - panelsToWrite;
                             if (left > 0) _dpcPending[key] = cur with { Panels = left, FirstAt = winEnd };
                             else _dpcPending.Remove(key);
                         }
