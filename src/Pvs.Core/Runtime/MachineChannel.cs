@@ -77,6 +77,19 @@ public sealed class MachineChannel
     /// <c>A5E02</c>), or null if the request was not refused. Cleared on each new request.</summary>
     public string? LastReportError { get; private set; }
 
+    /// <summary>Raw text of the last C1Z per-supply-location (per-feeder) report exactly as the machine streamed
+    /// it — captured verbatim so the field layout can be confirmed before it's parsed. Null until first read.</summary>
+    public string? RawSupplyReport { get; private set; }
+    /// <summary>When <see cref="RawSupplyReport"/> was last read.</summary>
+    public DateTime SupplyReportAt { get; private set; }
+    /// <summary>Raised when a fresh C1Z per-feeder report is read from the machine.</summary>
+    public event Action<string>? SupplyReportRead;
+
+    // Report collection is shared by C1M (production count) and C1Z (per-supply-location). Only one report is
+    // in flight at a time; the kind decides how the accumulated D0 text is parsed when it completes.
+    private enum ReportKind { None, Production, Supply }
+    private ReportKind _reportKind = ReportKind.None;
+    private double _reportTimeoutSec = 8;
     private bool _collectingReport;
     private readonly System.Text.StringBuilder _reportBuf = new();
     private DateTime _reportStart;
@@ -96,6 +109,8 @@ public sealed class MachineChannel
     {
         _reportBuf.Clear();
         _collectingReport = true;
+        _reportKind = ReportKind.Production;
+        _reportTimeoutSec = 8;
         _reportStart = now;
         LastReportError = null;
         // SI-F manual 6.2.2: "C1Mmmm" ALONE = Entire Machine Status ("If the data name is not added, the
@@ -105,6 +120,41 @@ public sealed class MachineChannel
         var cmd = string.IsNullOrWhiteSpace(pwbName) ? "C1M000" : "C1M000P" + pwbName.Trim();
         LastReportCommand = cmd;
         _send(SonyFrame.Build(cmd));
+    }
+
+    /// <summary>
+    /// Ask the machine for its Production Report "Summary by Supply Location" (<c>C1Z000</c> entire machine, or
+    /// <c>C1Z000P&lt;pwb name&gt;</c> for one PWB file) — the per-feeder pickup/loss counts (attempted vs
+    /// successful pickups, miss/abnormal/recognition errors, parts-out times). Same streaming protocol as C1M;
+    /// the raw report text lands verbatim in <see cref="RawSupplyReport"/> and fires <see cref="SupplyReportRead"/>.
+    /// Uses a longer window than C1M by default — a per-feeder report is one record per supply location, so it
+    /// is much larger than the single PC field.
+    /// </summary>
+    public void RequestSupplyReport(DateTime now, string? pwbName = null, double timeoutSec = 60)
+    {
+        _reportBuf.Clear();
+        _collectingReport = true;
+        _reportKind = ReportKind.Supply;
+        _reportTimeoutSec = timeoutSec;
+        _reportStart = now;
+        LastReportError = null;
+        var cmd = string.IsNullOrWhiteSpace(pwbName) ? "C1Z000" : "C1Z000P" + pwbName.Trim();
+        LastReportCommand = cmd;
+        _send(SonyFrame.Build(cmd));
+    }
+
+    /// <summary>Parse/store the finished report text according to what was requested, then reset the kind.</summary>
+    private void FinishReport(string text, DateTime now)
+    {
+        if (_reportKind == ReportKind.Production)
+        {
+            if (SonyProductionReport.CompletedPwbs(text) is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
+        }
+        else if (_reportKind == ReportKind.Supply)
+        {
+            RawSupplyReport = text; SupplyReportAt = now; SupplyReportRead?.Invoke(text);
+        }
+        _reportKind = ReportKind.None;
     }
 
     /// <summary>Feed a chunk of received characters (e.g. from SerialPort.ReadExisting()).</summary>
@@ -131,17 +181,16 @@ public sealed class MachineChannel
         // safety functions are untouched. Times out after 8s so a stalled/failed transfer reverts to normal.
         if (_collectingReport)
         {
-            bool timedOut = (now - _reportStart) > TimeSpan.FromSeconds(8);
+            bool timedOut = (now - _reportStart) > TimeSpan.FromSeconds(_reportTimeoutSec);
             if (!timedOut && msg.Payload.StartsWith("D0", StringComparison.Ordinal))
             {
                 string data = msg.Payload.Length > 2 ? msg.Payload[2..] : string.Empty;
                 if (data.Length == 0)   // terminator: finalize, ack the end (A0) then close the transfer (A2)
                 {
-                    var pc = SonyProductionReport.CompletedPwbs(_reportBuf.ToString());
                     _collectingReport = false;
                     _send(SonyFrame.Build("A0"));
                     _send(SonyFrame.Build("A2"));
-                    if (pc is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
+                    FinishReport(_reportBuf.ToString(), now);
                 }
                 else { _reportBuf.Append(data); _send(SonyFrame.Build("A0")); }
                 return;   // report line handled — skip normal processing / A2 ack
@@ -155,12 +204,12 @@ public sealed class MachineChannel
             {
                 LastReportError = msg.Payload;
                 _collectingReport = false;
+                _reportKind = ReportKind.None;
             }
 
-            if (timedOut)   // salvage whatever arrived (PC is early in the report), then process this msg normally
+            if (timedOut)   // salvage whatever arrived so far, then process this msg normally
             {
-                var pc = SonyProductionReport.CompletedPwbs(_reportBuf.ToString());
-                if (pc is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
+                FinishReport(_reportBuf.ToString(), now);
                 _collectingReport = false;
             }
         }

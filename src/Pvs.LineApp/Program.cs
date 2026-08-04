@@ -296,6 +296,43 @@ app.MapPost("/api/machinecount", async (LineService line, int? machine, string? 
     });
 });
 
+// C1Z per-feeder report: each machine's OWN pickup counts per supply location (attempted/successful pickups,
+// miss/abnormal/recognition errors, parts-out times). Phase 1 returns the RAW report text so the field layout
+// is confirmed against real hardware before a parser is committed. ?machine=N one machine; ?pwb=auto uses each
+// machine's C3P program name (minus extension); ?waitMs default 65s (per-feeder reports are large).
+app.MapPost("/api/supplyreport", async (LineService line, int? machine, string? pwb, int? waitMs) =>
+{
+    var now = DateTime.Now;
+    var targets = line.Listeners.Where(l => machine is null || l.Channel.Machine == machine).ToList();
+    foreach (var l in targets)
+    {
+        var name = pwb;
+        if (string.Equals(pwb, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            var prog = l.Channel.ProgramName;
+            var dot = prog?.LastIndexOf('.') ?? -1;
+            name = dot > 0 ? prog![..dot] : prog;
+        }
+        l.Channel.RequestSupplyReport(now, name);
+    }
+    await Task.Delay(waitMs ?? 65000);   // let the (large) C1Z report stream back over serial
+    return Results.Ok(new
+    {
+        readAt = DateTime.Now,
+        machines = targets.Select(l => new
+        {
+            machine = l.Channel.Machine,
+            online = l.Channel.IsOnline,
+            sent = l.Channel.LastReportCommand,
+            error = l.Channel.LastReportError,
+            program = l.Channel.ProgramName,
+            reportLength = l.Channel.RawSupplyReport?.Length ?? 0,
+            report = l.Channel.RawSupplyReport,
+            at = l.Channel.SupplyReportAt == default ? (DateTime?)null : l.Channel.SupplyReportAt
+        }).ToList()
+    });
+});
+
 // Board-count reconciliation: PVS's live count vs each machine's OWN counter (C1M). The two fail in
 // opposite ways — PVS misses boards while blind; the machine's counter is reset by the operator at every
 // lot end (SOP) — so comparing them catches both. Observe-and-record only; nothing is auto-corrected.

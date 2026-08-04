@@ -204,6 +204,37 @@ public class MachineChannelTests
     }
 
     [Fact]
+    public void RequestSupplyReport_sends_C1Z000_bare_and_with_pwb_name()
+    {
+        var (ch, sent) = Make();
+        ch.RequestSupplyReport(T0);
+        Assert.Contains(sent, s => s.Contains("C1Z000") && !s.Contains("C1Z000P"));
+        sent.Clear();
+        ch.RequestSupplyReport(T0, "L307 - B SIDE _Cell4");
+        Assert.Contains(sent, s => s.Contains("C1Z000PL307 - B SIDE _Cell4"));
+    }
+
+    [Fact]
+    public void C1Z_report_is_captured_raw_and_not_parsed_as_a_production_count()
+    {
+        var (ch, sent) = Make();
+        int prodEvents = 0; ch.ProductionCountRead += _ => prodEvents++;
+        string? raw = null; ch.SupplyReportRead += r => raw = r;
+
+        ch.RequestSupplyReport(T0);
+        // machine streams the per-feeder report as D0 lines (comma-delimited supply-location records)
+        ch.Feed(Frame("D0  115,  0001200,  0001180,"), T0);
+        ch.Feed(Frame("D0  0000020,  0000000,"), T0);
+        ch.Feed(Frame("D0"), T0);   // terminator
+
+        Assert.NotNull(raw);
+        Assert.Contains("115,  0001200,  0001180", raw);
+        Assert.Equal(raw, ch.RawSupplyReport);
+        Assert.Equal(0, prodEvents);                 // a C1Z report must NOT fire the C1M production-count event
+        Assert.True(sent.Count(s => s.Contains("A0")) >= 2);   // report lines acked A0
+    }
+
+    [Fact]
     public void A_stalled_C1M_report_times_out_and_reverts_to_normal_acking()
     {
         var (ch, sent) = Make();
