@@ -616,8 +616,22 @@ app.MapPost("/api/inventory/adjust", async (LineService line, IReelPartRepositor
                           : "Feeder not tracked yet — run a shift/model check first." });
 });
 
+// Password-protected shutdown: a clean stop frees the COM ports (e.g. to run serial-port test software).
+// The process exits 0, so the scheduled task does NOT auto-restart it — it comes back on the next reboot or a
+// manual Start. Password defaults to "100732" (config: shutdownPassword).
+app.MapPost("/api/shutdown", (LineService line, IHostApplicationLifetime lifetime, ShutdownReq req) =>
+{
+    var pw = string.IsNullOrWhiteSpace(line.Config.ShutdownPassword) ? "100732" : line.Config.ShutdownPassword;
+    if ((req?.Password ?? "") != pw)
+        return Results.Ok(new { ok = false, message = "Wrong password — PVS not shut down." });
+    // Reply first, then stop the host a moment later so the browser gets the response.
+    _ = Task.Run(async () => { await Task.Delay(600); lifetime.StopApplication(); });
+    return Results.Ok(new { ok = true, message = "PVS is shutting down — the serial ports will be released. It restarts on the next reboot." });
+});
+
 app.Run();
 
+record ShutdownReq(string Password = "");
 record MachineReq(int Machine);
 record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);
 record ModelReq(int ProductId, string Side);

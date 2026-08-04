@@ -78,6 +78,8 @@
     <a href="/report.html" style="color:var(--mut);text-decoration:none;font-size:14px">Daily report</a>
     <a href="/verify.html" style="color:var(--mut);text-decoration:none;font-size:14px">Verify</a>
     <span class="clock" id="clock">--:--:--</span>
+    <button id="shutdownBtn" title="Shut down PVS on this line (frees the serial ports)"
+            style="background:none;border:1px solid var(--mut);color:var(--mut);border-radius:6px;padding:3px 9px;font-size:13px;cursor:pointer">⏻ Shutdown</button>
   </span>
 </header>
 
@@ -279,6 +281,17 @@ async function refresh(){
   }catch(e){ /* transient */ }
 }
 refresh(); setInterval(refresh, 3000);
+
+// Password-protected shutdown — a clean stop releases the serial (COM) ports for test software.
+document.getElementById('shutdownBtn').onclick = async () => {
+  const pw = prompt('Enter the password to SHUT DOWN PVS on this line.\nThis stops monitoring and FREES the serial (COM) ports.\nPVS comes back on the next reboot.');
+  if (pw === null || pw === '') return;
+  try {
+    const r = await fetch('/api/shutdown', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: pw }) });
+    const j = await r.json();
+    alert(j.message || (j.ok ? 'Shutting down…' : 'Failed.'));
+  } catch (e) { alert('Shutdown request failed (the app may already be stopping): ' + e); }
+};
 </script>
 </body>
 </html>

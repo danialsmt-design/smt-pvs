@@ -70,6 +70,10 @@ public sealed class LineConfig
     public CentralConfig Central { get; set; } = new();
     public BadgeConfig Badge { get; set; } = new();
 
+    /// <summary>Password that authorises the on-screen "Shut down PVS" button (a clean stop frees the COM ports,
+    /// e.g. to run serial-port test software). Defaults to "100732" when not set in the config.</summary>
+    public string ShutdownPassword { get; set; } = "100732";
+
     /// <summary>
     /// Write live per-feeder remaining balances (by reel UID) back to StockOuts.Quantity every few minutes.
     /// Requires the pvs_ro login to have UPDATE on StockOuts.Quantity (already granted). Off by default.
