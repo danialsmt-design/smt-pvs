@@ -147,9 +147,44 @@ public sealed class CounterReconcilerService : IDisposable
             }
             Append(run);
             SavePrevious();
+
+            // If the line is in AUTO (at least one machine handed over its C1M counter this pass), the machines
+            // will also accept a C1Z per-feeder report — which they refuse (A4E00) while stopped. Grab it and
+            // save the RAW text so the field layout can be confirmed before a parser is committed. Runs only when
+            // producing, so it never burns a read window on a refusal.
+            if (rows.Any(r => r.MachineCount is not null))
+            {
+                try { await CaptureSupplyReportsAsync(); } catch { /* best-effort; never disturb the line */ }
+            }
             return run;
         }
         finally { _running = false; }
+    }
+
+    /// <summary>Read every machine's C1Z per-feeder report and save the raw text (overwrite-latest per machine)
+    /// to <c>&lt;app&gt;\supply-report\</c>. Phase 1: capture only — no parsing yet.</summary>
+    private async Task CaptureSupplyReportsAsync()
+    {
+        var listeners = _line.Listeners.ToList();
+        var at = DateTime.Now;
+        foreach (var l in listeners)
+            l.Channel.RequestSupplyReport(at, StripExtension(l.Channel.ProgramName));
+
+        await Task.Delay(TimeSpan.FromSeconds(60));   // a per-feeder report is one record per supply location — large
+
+        var sdir = Path.Combine(AppContext.BaseDirectory, "supply-report");
+        foreach (var l in listeners)
+        {
+            var raw = l.Channel.RawSupplyReport;
+            if (string.IsNullOrEmpty(raw) || l.Channel.SupplyReportAt < at) continue;   // only a fresh capture from THIS pass
+            try
+            {
+                Directory.CreateDirectory(sdir);
+                File.WriteAllText(Path.Combine(sdir, $"supply-M{l.Channel.Machine}-latest.txt"),
+                    $"# captured {at:yyyy-MM-dd HH:mm:ss}  cmd={l.Channel.LastReportCommand}  len={raw.Length}{Environment.NewLine}{raw}");
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     /// <summary>Drop the cell-specific extension (".PW1".."PW4"/".PWB") — C1M wants the name only.</summary>
