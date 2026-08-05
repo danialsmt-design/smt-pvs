@@ -191,24 +191,26 @@
   .rightcol{display:flex;flex-direction:column;gap:10px}
   #exhMini{padding:11px 13px}
   #exhMini .hd{font-size:11.5px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px}
-  #exhMini .er{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 11px;border-radius:10px;
+  /* 4 equal columns: Part Number | Machine | Feeder | Out (Hrs) */
+  #exhMini .colhd{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 11px 6px;
+    font-size:10.5px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.03em;text-align:center}
+  #exhMini .colhd span:first-child{text-align:left}
+  #exhMini .er{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;align-items:center;padding:9px 11px;border-radius:10px;
     border-left:4px solid var(--mut2);background:var(--pan2);margin-bottom:7px;transition:.15s}
   #exhMini .er:last-child{margin-bottom:0}
   #exhMini .er.red{border-left-color:var(--red);background:rgba(227,107,96,.08)}
   #exhMini .er.amber{border-left-color:var(--amber);background:rgba(230,176,74,.07)}
   #exhMini .er.ok{border-left-color:var(--ok)}
-  #exhMini .pt{font-family:ui-monospace,Consolas,monospace;font-weight:700;font-size:14px}
-  #exhMini .loc{color:var(--mut);font-size:11px;margin-top:2px}
-  #exhMini .tm{font-weight:800;white-space:nowrap;font-size:16px}
-  #exhMini .tm.red{color:var(--red)} #exhMini .tm.amber{color:var(--amber)} #exhMini .tm.ok{color:var(--ok)}
+  #exhMini .er .c{font-size:14px;font-weight:700;text-align:center}
+  #exhMini .er .c.pt{font-family:ui-monospace,Consolas,monospace;text-align:left}
+  #exhMini .er .c.tm{font-weight:800;white-space:nowrap}
+  #exhMini .er .c.tm.red{color:var(--red)} #exhMini .er .c.tm.amber{color:var(--amber)} #exhMini .er .c.tm.ok{color:var(--ok)}
   /* material short — issued reels won't cover the lot; flashing orange = REQUEST now (lead time) */
   #exhMini .er.short{border-left-color:#F0932B;animation:shortflash 1s ease-in-out infinite}
-  #exhMini .tm.short{color:#F0932B}
+  #exhMini .er .c.tm.short{color:#F0932B}
   @keyframes shortflash{0%,100%{background:rgba(240,147,43,.10)}50%{background:rgba(240,147,43,.34)}}
   #exhMini .hd.okhd{color:var(--ok)}
   #exhMini .hd.warnhd{color:#F0932B}
-  #exhMini .cvg{font-size:11px;font-weight:700;margin-top:2px;white-space:nowrap}
-  #exhMini .cvg.short{color:#F0932B} #exhMini .cvg.lasts{color:var(--ok)}
 </style>
 </head>
 <body>
@@ -793,15 +795,17 @@ async function refresh(){
     } else { hd.className='hd'; hd.textContent = '⏱ Next to run out / နောက်ကုန်မည့်'; }
     const c = $('exhMiniRows');
     if(!rows.length){ c.innerHTML = '<div class="loc">no tracked reels yet / မရှိ</div>'; }
-    else c.innerHTML = rows.map(r=>{
+    else c.innerHTML = '<div class="colhd"><span>Part Number</span><span>Machine</span><span>Feeder</span><span>Out (Hrs)</span></div>'
+      + rows.map(r=>{
       let cls = r.minutes==null ? '' : (r.minutes<45?'red':(r.minutes<120?'amber':'ok'));
-      // coverage badge shown ALONGSIDE the forecast time (never replaces it)
-      let badge = '';
-      if(r.underIssued){ cls='short'; badge = `<div class="cvg short">⚠ short for lot${r.shortfallBoards!=null?(' · '+r.shortfallBoards+'bd'):''}</div>`; }
-      else if(r.lastsLot){ badge = `<div class="cvg lasts">✓ lasts lot</div>`; }
-      return `<div class="er ${cls}"><div><div class="pt">${r.part}</div>`
-        + `<div class="loc">M/စက် ${r.machine} · F/ဖီဒါ ${r.feeder} · ${Number(r.remaining).toLocaleString()} pcs/ကျန်</div></div>`
-        + `<div style="text-align:right"><div class="tm ${cls==='short'?'amber':cls}">${r.timeLeft}</div>${badge}</div></div>`;
+      if(r.underIssued){ cls='short'; }
+      // out time in hours (from the run-out minutes); if it lasts past the shift, show the text estimate
+      const hrs = (r.minutes==null) ? (r.timeLeft||'—') : (r.minutes/60).toFixed(1)+' h';
+      return `<div class="er ${cls}">`
+        + `<div class="c pt">${r.part}</div>`
+        + `<div class="c">M${r.machine}</div>`
+        + `<div class="c">F${r.feeder}</div>`
+        + `<div class="c tm ${cls==='short'?'amber':cls}">${hrs}</div></div>`;
     }).join('');
   }catch(e){}
 
