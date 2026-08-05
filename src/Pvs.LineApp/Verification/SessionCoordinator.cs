@@ -746,6 +746,9 @@ public sealed class SessionCoordinator : IDisposable
                 _dpcPending[key] = new DpcBucket(desiredUnwritten, b?.FirstAt ?? DateTime.Now);
                 _log.LogInformation("DPC seed: lot {Lot} {Model}/{Side} produced {Prod}p, recorded {Rec}p -> bucket {Seed}p.",
                     lot, model, side, lotPanels, recordedPanels, desiredUnwritten);
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "DpcSeed", 0, 0,
+                    $"{recordedPanels}p recorded, +{desiredUnwritten}p seeded", Supervisor: "auto",
+                    Quantity: (int)(desiredUnwritten * perPanel), Note: $"{side} startup seed", LotNo: lot));
             }
         }
         SaveDpcState();
@@ -996,7 +999,11 @@ public sealed class SessionCoordinator : IDisposable
                 perPanel,
                 lastMachine = _lastMachine,
                 remaining,
-                endingSoon = remaining is int r && r <= LotEndThreshold
+                endingSoon = remaining is int r && r <= LotEndThreshold,
+                // INTEGRITY alarm: produced has passed the effective target. Surfaces an inflated count (e.g. a
+                // bad machine adoption) immediately on the floor instead of it landing silently in the DB.
+                overTarget = effTarget is int et && produced > et,
+                overBy = effTarget is int et2 ? Math.Max(0, produced - et2) : 0
             };
         }
     }
@@ -1311,24 +1318,100 @@ public sealed class SessionCoordinator : IDisposable
         }
     }
 
+    /// <summary>Best-effort audit write — never throws into the caller (the sink is a local append log).</summary>
+    private void Audit(VerificationRecord r) => _ = SafeWriteAsync(r);
+    private async Task SafeWriteAsync(VerificationRecord r)
+    {
+        try { await _records.WriteAsync(r); } catch (Exception ex) { _log.LogDebug(ex, "Audit write failed."); }
+    }
+
     /// <summary>
     /// Adopt the machine's count as the current lot's count — re-anchor so <see cref="LotPanels"/> == the given
     /// panels. This TRUSTS the last machine's (M4/Cell4 = PCB-out) own counter over PVS's live R0 count, which
-    /// misses boards whenever PVS is off/restarting. Persisted so it survives a restart. Returns the count it set,
-    /// or -1 if there is no current lot.
+    /// misses boards whenever PVS is off/restarting. Persisted so it survives a restart.
+    /// <para>
+    /// INTEGRITY GUARD (<paramref name="enforceCap"/>): the machine's serial report counter is NOT reset per lot
+    /// by operators, so once it runs cumulatively it reads far above the lot's real output (the L307 incident:
+    /// 825 panels adopted against a 300-panel target → a 3300-board lot and a phantom DB row). An over-target
+    /// value is therefore treated as an un-reset counter and REFUSED, unless a supervisor explicitly forces it.
+    /// </para>
+    /// Returns the panels it set, <c>-1</c> if no lot is running, or <c>-2</c> if refused by the target cap.
     /// </summary>
-    public int AdoptLotCount(int machinePanels, string reason)
+    public int AdoptLotCount(int machinePanels, string reason, string? supervisor = null, bool enforceCap = true)
     {
+        machinePanels = Math.Max(0, machinePanels);
+        int oldPanels, pp; long capPanels; string lot; bool refused, noTarget, adopted = false;
+        // Everything that reads AND mutates the anchor happens under ONE lock, so the lot identity can't change
+        // underneath the decision (no check-then-act race). Logging/audit/persist run after, outside the lock.
         lock (_gate)
         {
             if (string.IsNullOrWhiteSpace(_currentLotNo)) return -1;
-            _lotCountFor = _currentLotNo;
-            _lotAnchorTotal = _m4PanelsTotal - Math.Max(0, machinePanels);
-            _log.LogInformation("Lot count ADOPTED from machine: lot {Lot} -> {Panels} panels [{Reason}].",
-                _currentLotNo, machinePanels, reason);
+            lot = _currentLotNo;
+            oldPanels = (_lotCountFor == _currentLotNo) ? LotPanels() : 0;
+            pp = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1;
+            int? effTarget = _lotTarget is int t ? t + _lotExtra : (int?)null;
+            noTarget = effTarget is null;
+            // Target ceiling in panels, +10% slack for genuine overproduction.
+            capPanels = (effTarget is int e && pp > 0) ? (long)Math.Ceiling(e / (double)pp * 1.10) : long.MaxValue;
+            // REFUSE (never fall open) when the cap is on and either the target is unknown — the DB-down-at-lot-start
+            // window that caused the incident — or the machine value is over the ceiling (an un-reset report counter).
+            // Refusing keeps PVS's own count: the safe direction (a recoverable undercount, never a phantom overcount).
+            refused = enforceCap && (noTarget || machinePanels > capPanels);
+            if (!refused)
+            {
+                _lotCountFor = _currentLotNo;
+                _lotAnchorTotal = _m4PanelsTotal - machinePanels;
+                adopted = true;
+            }
         }
-        SaveLotProgress();
-        return Math.Max(0, machinePanels);
+        int auditBoards = (int)Math.Min(int.MaxValue, (long)machinePanels * pp);
+        if (refused)
+        {
+            string why = noTarget ? "no lot target known" : $"over cap {capPanels}p";
+            _log.LogWarning("Lot count adopt REFUSED ({Why}): lot {Lot} machine {MP}p [{Reason}].", why, lot, machinePanels, reason);
+            Audit(new VerificationRecord(DateTime.Now, _config.LineName, "AdoptRejected", 0, 0,
+                $"{oldPanels}->{machinePanels}p ({why})", Supervisor: supervisor ?? "auto",
+                Quantity: auditBoards, Overridden: false, Note: reason, LotNo: lot));
+            return -2;
+        }
+        _log.LogInformation("Lot count ADOPTED from machine: lot {Lot} {Old}p -> {New}p [{Reason}].",
+            lot, oldPanels, machinePanels, reason);
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "AdoptCount", 0, 0,
+            $"{oldPanels}->{machinePanels}p", Supervisor: supervisor ?? "auto",
+            Quantity: auditBoards, Overridden: !enforceCap, Note: reason, LotNo: lot));
+        if (adopted) SaveLotProgress();
+        return machinePanels;
+    }
+
+    /// <summary>If the lot target is unknown (DB was unreachable at lot start), try to fetch it now so the adopt
+    /// cap can engage. Best-effort and idempotent — safe to call every reconcile pass; on failure the target stays
+    /// null and auto-adoption stays refused (the safe direction).</summary>
+    public async Task EnsureLotTargetAsync(CancellationToken ct = default)
+    {
+        string lot;
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(_currentLotNo) || _lotCountFor != _currentLotNo || _lotTarget is not null) return;
+            lot = _currentLotNo;
+        }
+        try
+        {
+            var target = await _repo.GetLotTargetAsync(lot, ct);
+            if (target is int) lock (_gate) { if (_currentLotNo == lot && _lotTarget is null) _lotTarget = target; }
+        }
+        catch { /* DB still down — leave null; adoption stays refused until it recovers */ }
+    }
+
+    /// <summary>Supervisor manually sets the lot count from a machine reading (badge-gated, L2+). Honours the
+    /// target cap unless <paramref name="force"/> is set (deliberate override for genuine overproduction).</summary>
+    public async Task<string> AdoptLotCountBadgedAsync(string badgeUid, int panels, bool force, CancellationToken ct = default)
+    {
+        var badge = await _repo.FindBadgeAsync(badgeUid ?? "", ct);
+        if (badge is null || !badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to set the lot count.";
+        int applied = AdoptLotCount(panels, force ? "manual override (force)" : "manual set", badge.Name, enforceCap: !force);
+        if (applied == -1) return "No lot is running.";
+        if (applied == -2) return $"Refused: {panels} panels is over the lot target — check the machine's report counter was reset for this lot, or use force to override.";
+        return $"Lot count set to {applied} panels ({applied * PerPanel} boards) by {badge.Name}.";
     }
 
     /// <summary>
@@ -1357,6 +1440,9 @@ public sealed class SessionCoordinator : IDisposable
         }
         SaveLotProgress();
         _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels).", endedLot, badge.Name, boards, panels);
+        await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotEnd", 0, 0,
+            "ForceEnded", Supervisor: badge.Name, Quantity: boards, Overridden: true,
+            Note: $"supervisor force-end at {panels}p", LotNo: endedLot), ct);
         return $"Lot {endedLot} ended by {badge.Name} — {boards} boards. Ready for the next lot.";
     }
 

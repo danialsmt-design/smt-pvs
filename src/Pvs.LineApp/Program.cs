@@ -699,17 +699,16 @@ app.MapPost("/api/email/test", async (Pvs.LineApp.Runtime.EmailSender email, Lin
     return Results.Ok(new { ok, gateway = email.IsGateway, message = ok ? "sent" : "not sent (see logs)" });
 });
 
-// Force the current lot count to a machine-reported value (M4 = PCB-out, the trusted number). ?panels=N or
-// ?boards=N. The reconciler does this automatically when M4 reads ahead; this is the manual/immediate lever.
-app.MapPost("/api/lot/adopt", (LineService line, int? panels, int? boards) =>
+// Supervisor sets the current lot count to a machine-reported value (M4 = PCB-out). Badge-gated (L2+) and
+// capped at the lot target — an over-target value is refused (an un-reset machine counter) unless force=true.
+// The reconciler adopts automatically (also capped) when M4 reads ahead; this is the manual/immediate lever.
+app.MapPost("/api/lot/adopt", async (LineService line, AdoptReq req) =>
 {
-    if (line.Coordinator is null) return Results.Ok(new { ok = false, message = "coordinator not ready" });
+    if (line.Coordinator is null) return Results.Ok(new { message = "coordinator not ready" });
     int pp = line.Coordinator.PerPanel;
-    int p = panels ?? (boards is int b && pp > 0 ? (int)Math.Round((double)b / pp) : -1);
-    if (p < 0) return Results.Ok(new { ok = false, message = "pass ?panels=N or ?boards=N" });
-    int applied = line.Coordinator.AdoptLotCount(p, "manual /api/lot/adopt");
-    return Results.Ok(new { ok = applied >= 0, panels = applied, boards = applied * pp,
-        message = applied >= 0 ? "adopted machine count" : "no current lot to adopt" });
+    int p = req.Panels ?? (req.Boards is int b && pp > 0 ? (int)Math.Round((double)b / pp) : -1);
+    if (p < 0) return Results.Ok(new { message = "pass panels or boards" });
+    return Results.Ok(new { message = await line.Coordinator.AdoptLotCountBadgedAsync(req.Badge, p, req.Force) });
 });
 
 // Supervisor force-ends the running lot (finalises the count + clears it for the next lot). Badge-gated (L2+).
@@ -725,6 +724,7 @@ record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);
 record ModelReq(int ProductId, string Side);
 record ModelManualReq(int ProductId, string Side, string Badge = "");
 record BadgeReq(string Badge = "");
+record AdoptReq(string Badge = "", int? Panels = null, int? Boards = null, bool Force = false);
 record ScanReq(string Value);
 record ReelReq(string PartNumber, string Uid);
 record QtyReq(int Quantity);

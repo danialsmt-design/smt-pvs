@@ -38,6 +38,7 @@ public sealed class LineService : IHostedService, IDisposable
 
     public SessionCoordinator? Coordinator { get; private set; }
     public Pvs.LineApp.Runtime.DowntimeService? Downtime { get; private set; }
+    public Pvs.LineApp.Runtime.ShiftUptimeService? ShiftUptime { get; private set; }
     public Pvs.LineApp.Runtime.CounterReconcilerService? Reconciler { get; private set; }
     public Pvs.LineApp.Inventory.FeederReelStore Reels => _reels;
 
@@ -81,6 +82,16 @@ public sealed class LineService : IHostedService, IDisposable
         Downtime = new Pvs.LineApp.Runtime.DowntimeService(this,
             Path.Combine(AppContext.BaseDirectory, "downtime.json"));
         Downtime.Start();
+        try
+        {
+            ShiftUptime = new Pvs.LineApp.Runtime.ShiftUptimeService(this, _config.ToShiftSchedule(),
+                Path.Combine(AppContext.BaseDirectory, "shift-uptime"));
+            ShiftUptime.Start();
+        }
+        catch (Exception ex)
+        {
+            _loggerFactory.CreateLogger<LineService>().LogWarning(ex, "Shift-uptime sampler failed to start (non-fatal).");
+        }
         Reconciler = new Pvs.LineApp.Runtime.CounterReconcilerService(this,
             Path.Combine(AppContext.BaseDirectory, "reconcile"), _config.ReconcileMinutes);
         Reconciler.Start();
@@ -110,6 +121,7 @@ public sealed class LineService : IHostedService, IDisposable
     public Task StopAsync(CancellationToken cancellationToken)
     {
         Downtime?.Dispose();
+        ShiftUptime?.Dispose();
         Reconciler?.Dispose();
         foreach (var l in _listeners) l.Dispose();
         _listeners.Clear();

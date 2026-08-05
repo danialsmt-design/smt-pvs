@@ -142,6 +142,9 @@ public sealed class CounterReconcilerService : IDisposable
             // never adopted, so a reset can't wipe the count. Config-gated (TrustMachineCount, on by default).
             if (_line.Config.TrustMachineCount && _line.Coordinator is not null)
             {
+                // Make sure the lot target is known so the adopt cap can engage — if the DB was down at lot start
+                // the target is null and (by design) adoption is refused until this fills it in.
+                await _line.Coordinator.EnsureLotTargetAsync();
                 int lastMachine = listeners.Select(l => l.Channel.Machine).DefaultIfEmpty(0).Max();
                 var lastRes = results.FirstOrDefault(r => r.Machine == lastMachine);
                 if (lastRes is not null && lastRes.ShouldAdoptMachineCount && lastRes.MachineCount is int mc)
