@@ -187,6 +187,12 @@
   #lotCard.warn .big{color:var(--red)}
   #lotCard.done{border-color:rgba(84,189,127,.5);background:linear-gradient(180deg,rgba(84,189,127,.12),rgba(84,189,127,.05))}
   #lotCard.done .big{color:var(--ok);font-size:34px}
+  /* lot qty breakdown — equal columns: Produced | Panels | Target (boards + panels both shown) */
+  #lotCard .lotstats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;border-top:1px solid var(--ln2);padding-top:10px}
+  #lotCard .lotstats>div{text-align:center}
+  #lotCard .ls-h{font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+  #lotCard .ls-v{font-size:24px;font-weight:900;line-height:1.05;margin-top:3px;font-feature-settings:"tnum" 1}
+  #lotCard .ls-u{font-size:11px;color:var(--mut);font-weight:600;margin-top:1px}
   /* top-5 exhaust panel — sits at the TOP of the right column (fills the gap beside the model/task) */
   .rightcol{display:flex;flex-direction:column;gap:10px}
   #exhMini{padding:11px 13px}
@@ -512,16 +518,23 @@ function updateLot(l){
   }
   const rem=l.remaining, warn=l.endingSoon, done=rem<=0;
   card.style.display='block'; card.className = 'card' + (done?' done':(warn?' warn':''));
+  // qty breakdown row — Produced (boards) | Panels (×boards/panel) | Target (boards). Shows BOTH panels and boards.
+  const pp = l.perPanel||1;
+  const stats = `<div class="lotstats">`
+    + `<div><div class="ls-h">Produced</div><div class="ls-v">${Number(l.producedBoards).toLocaleString()}</div><div class="ls-u">boards / ဘုတ်</div></div>`
+    + `<div><div class="ls-h">Panels</div><div class="ls-v">${Number(l.panels).toLocaleString()}</div><div class="ls-u">×${pp}/panel</div></div>`
+    + `<div><div class="ls-h">Target</div><div class="ls-v">${l.effectiveTarget!=null?Number(l.effectiveTarget).toLocaleString():'—'}</div><div class="ls-u">boards${l.extra?(' · +'+l.extra):''}</div></div>`
+    + `</div>`;
   if(done){
     // Lot COMPLETE — calm green state, not a permanent red alarm. Points to where to set the next lot.
     card.innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>`
       + `<div class="big" style="color:var(--ok)">✅ done</div>`
       + `<div class="unit">lot complete / လော့ပြီး — set the next lot on ⚙ Model &amp; lot</div>`
-      + `<div class="prog">produced ${l.producedBoards} / target ${l.effectiveTarget}</div>`;
+      + stats;
   } else {
     card.innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>`
       + `<div class="big">${rem}</div><div class="unit">boards to lot end / LOT ကုန်ရန် ဘုတ်</div>`
-      + `<div class="prog">produced ${l.producedBoards} / target ${l.effectiveTarget}${l.extra?(' · +'+l.extra+' added'):''}</div>`;
+      + stats;
   }
   if(warn){
     if(!lotDismissedFor(l.lotNo) && !typingLot){
