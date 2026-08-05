@@ -712,6 +712,10 @@ app.MapPost("/api/lot/adopt", (LineService line, int? panels, int? boards) =>
         message = applied >= 0 ? "adopted machine count" : "no current lot to adopt" });
 });
 
+// Supervisor force-ends the running lot (finalises the count + clears it for the next lot). Badge-gated (L2+).
+app.MapPost("/api/lot/end", async (LineService line, BadgeReq req) =>
+    Results.Ok(new { message = line.Coordinator is null ? "coordinator not ready" : await line.Coordinator.ForceEndLotAsync(req.Badge) }));
+
 app.Run();
 
 record SendMailReq(string? Key, string[]? To, string? Subject, string? Body);

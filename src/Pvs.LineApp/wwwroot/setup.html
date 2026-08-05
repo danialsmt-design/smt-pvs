@@ -88,6 +88,9 @@
       <input id="lotProduced" type="number" min="0" placeholder="produced boards" inputmode="numeric" style="width:150px">
       <button onclick="setProduced()" title="Supervisor sets the boards already produced for this lot/side (e.g. 300 = side complete)">Set produced</button>
     </div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="forceEndLot()" title="Supervisor force-ends the running lot: finalises its production count and clears it so the next lot can start">⛔ Force-end lot</button>
+    </div>
     <div id="lotSelMsg"></div>
   </div>
 </main>
@@ -119,6 +122,14 @@ async function returnToAuto(){
   $('modelMsg').textContent='…';
   const res=await api('/api/model/auto',{badge:badge.trim()});
   $('modelMsg').textContent=res.message; pollModel();
+}
+// Supervisor force-ends the running lot (finalises the count, clears it for the next lot). Badge-gated (L2+).
+async function forceEndLot(){
+  const badge=prompt('SUPERVISOR: scan your badge to FORCE-END the running lot.\nThis finalises its production count and clears it for the next lot.');
+  if(!badge||!badge.trim()) return;
+  $('lotSelMsg').textContent='…';
+  const res=await api('/api/lot/end',{badge:badge.trim()});
+  $('lotSelMsg').textContent=res.message;
 }
 async function reloadDb(){
   if(_state.mode && _state.mode!=='None'){ $('modelMsg').textContent='Finish or cancel the current task before refreshing.'; return; }

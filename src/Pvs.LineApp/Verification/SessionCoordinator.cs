@@ -1331,6 +1331,35 @@ public sealed class SessionCoordinator : IDisposable
         return Math.Max(0, machinePanels);
     }
 
+    /// <summary>
+    /// Supervisor force-ends the running lot: finalises its production count (a last DPC flush) and clears the
+    /// lot so the next one starts fresh from a new anchor. Badge-gated (L2+). Returns a message for the operator.
+    /// </summary>
+    public async Task<string> ForceEndLotAsync(string badgeUid, CancellationToken ct = default)
+    {
+        var badge = await _repo.FindBadgeAsync(badgeUid ?? "");
+        if (badge is null || !badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to force-end the lot.";
+        string endedLot; int panels, pp;
+        lock (_gate)
+        {
+            endedLot = _currentLotNo;
+            pp = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1;
+            panels = (_lotCountFor == _currentLotNo) ? LotPanels() : 0;
+        }
+        if (string.IsNullOrWhiteSpace(endedLot)) return "No lot is running.";
+        // Finalise the production count for this lot before clearing it.
+        if (_config.WriteProductionCount) { try { await FlushProductionCountAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Flush on force-end failed."); } }
+        int boards = panels * pp;
+        lock (_gate)
+        {
+            _currentLotNo = ""; _lotCountFor = ""; _lotSideFor = "";
+            _lotAnchorTotal = _m4PanelsTotal; _lotExtra = 0; _lotTarget = null;
+        }
+        SaveLotProgress();
+        _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels).", endedLot, badge.Name, boards, panels);
+        return $"Lot {endedLot} ended by {badge.Name} — {boards} boards. Ready for the next lot.";
+    }
+
     // A shift-change check is due from 5 min after each shift start (07:35 / 19:35), for a grace window,
     // so it can still run once an in-progress changeover finishes instead of being lost at one instant.
     private static readonly TimeSpan ShiftTriggerGrace = TimeSpan.FromMinutes(60);
