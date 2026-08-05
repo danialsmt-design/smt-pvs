@@ -48,6 +48,9 @@ builder.Services.AddSingleton<ILineRecordSink>(_ =>
 builder.Services.AddSingleton(new Pvs.LineApp.Inventory.FeederReelStore(
     Path.Combine(AppContext.BaseDirectory, "inventory.json")));
 
+// Email reporting (pvsbangi). The gateway line SMTPs to Gmail; other lines relay to it.
+builder.Services.AddSingleton<Pvs.LineApp.Runtime.EmailSender>();
+
 builder.Services.AddSingleton<LineService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LineService>());
 
@@ -673,8 +676,32 @@ app.MapPost("/api/shutdown", (LineService line, IHostApplicationLifetime lifetim
     return Results.Ok(new { ok = true, message = "PVS is shutting down — the serial ports will be released. It restarts on the next reboot." });
 });
 
+// Email relay: a non-gateway line POSTs its outbound message here; the GATEWAY line (the one with internet)
+// SMTPs it via pvsbangi. Requires the shared key so only the plant's lines can use it.
+app.MapPost("/api/sendmail", async (Pvs.LineApp.Runtime.EmailSender email, SendMailReq req) =>
+{
+    if (!email.IsGateway) return Results.Ok(new { ok = false, message = "this line is not the email gateway" });
+    if (!email.KeyOk(req.Key)) return Results.Ok(new { ok = false, message = "bad key" });
+    if (req.To is null || req.To.Length == 0) return Results.Ok(new { ok = false, message = "no recipients" });
+    var ok = await email.SendSmtpAsync(req.To, req.Subject ?? "(no subject)", req.Body ?? "");
+    return Results.Ok(new { ok, message = ok ? "sent" : "send failed (see gateway logs)" });
+});
+
+// Send a test email through the normal path (SMTP if this line is the gateway, else relayed to it).
+app.MapPost("/api/email/test", async (Pvs.LineApp.Runtime.EmailSender email, LineService line, string? to) =>
+{
+    if (!email.Enabled) return Results.Ok(new { ok = false, message = "email disabled in config" });
+    var subject = $"PVS {line.Config.LineName} — email test";
+    var body = $"Test email from PVS on {line.Config.LineName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}. Gateway={email.IsGateway}.\r\nIf you received this, {line.Config.LineName}'s reports can be emailed.";
+    bool ok = string.IsNullOrWhiteSpace(to)
+        ? await email.SendToPicsAsync(subject, body)
+        : await email.SendAsync(new[] { to }, subject, body);
+    return Results.Ok(new { ok, gateway = email.IsGateway, message = ok ? "sent" : "not sent (see logs)" });
+});
+
 app.Run();
 
+record SendMailReq(string? Key, string[]? To, string? Subject, string? Body);
 record ShutdownReq(string Password = "");
 record MachineReq(int Machine);
 record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);

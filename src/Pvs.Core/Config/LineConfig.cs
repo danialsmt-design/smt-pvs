@@ -56,6 +56,39 @@ public sealed class BadgeConfig
     public string UidPrefix { get; set; } = "";
 }
 
+/// <summary>One report/alert recipient (a line's Person-In-Charge) and the role they cover, so alerts can be
+/// routed by type (e.g. cycle-time → Production; parts shortage → Parts Control).</summary>
+public sealed class EmailRecipient
+{
+    public string Email { get; set; } = "";
+    public string Role { get; set; } = "";
+}
+
+/// <summary>
+/// Email reporting. All PVS reports/alerts are emailed from a single Gmail (pvsbangi). Only the ONE line with
+/// internet actually talks to Gmail (SMTP) — it is the "gateway"; the others POST their message to the gateway's
+/// <c>/api/sendmail</c> over Tailscale so everything still originates from a line's PVS.
+/// </summary>
+public sealed class EmailConfig
+{
+    public bool Enabled { get; set; }
+    public string SmtpHost { get; set; } = "smtp.gmail.com";
+    public int SmtpPort { get; set; } = 587;
+    /// <summary>The sender account (pvsbangi@gmail.com). Its app password is read from the sidecar
+    /// <c>email-password.txt</c> next to the app (only the gateway line needs it).</summary>
+    public string From { get; set; } = "pvsbangi@gmail.com";
+    public string FromName { get; set; } = "PVS";
+    /// <summary>Empty = THIS line is the gateway (has internet; sends via SMTP). Set (e.g.
+    /// <c>http://100.69.81.105:5199</c>) = relay each message to that PVS's /api/sendmail instead.</summary>
+    public string GatewayUrl { get; set; } = "";
+    /// <summary>Shared secret the /api/sendmail endpoint requires, so only the plant's lines can relay through it.</summary>
+    public string GatewayKey { get; set; } = "";
+    /// <summary>This line's PICs — who its lot-complete/alert emails go to.</summary>
+    public List<EmailRecipient> Recipients { get; set; } = new();
+
+    public bool IsGateway => string.IsNullOrWhiteSpace(GatewayUrl);
+}
+
 /// <summary>
 /// The per-line configuration. One JSON file per line PC; the build is identical, only this differs.
 /// </summary>
@@ -69,6 +102,7 @@ public sealed class LineConfig
     public ForecastConfig Forecast { get; set; } = new();
     public CentralConfig Central { get; set; } = new();
     public BadgeConfig Badge { get; set; } = new();
+    public EmailConfig Email { get; set; } = new();
 
     /// <summary>Password that authorises the on-screen "Shut down PVS" button (a clean stop frees the COM ports,
     /// e.g. to run serial-port test software). Defaults to "100732" when not set in the config.</summary>
