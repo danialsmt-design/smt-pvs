@@ -77,6 +77,11 @@ public sealed class MachineChannel
     /// <c>A5E02</c>), or null if the request was not refused. Cleared on each new request.</summary>
     public string? LastReportError { get; private set; }
 
+    /// <summary>Raw text of the last C1M production report — kept so fields beyond the PC count can be read
+    /// (e.g. <c>ET</c> = Cycle Time, <c>PT</c> = PWB Waiting Time) via <see cref="Serial.SonyProductionReport.Field"/>.
+    /// NOTE: those fields are near the END of the ~30s report, so a full read needs a long timeout. Null until read.</summary>
+    public string? RawProductionReport { get; private set; }
+
     /// <summary>Raw text of the last C1Z per-supply-location (per-feeder) report exactly as the machine streamed
     /// it — captured verbatim so the field layout can be confirmed before it's parsed. Null until first read.</summary>
     public string? RawSupplyReport { get; private set; }
@@ -105,12 +110,12 @@ public sealed class MachineChannel
     /// <param name="pwbName">Optional PWB data-file name WITHOUT its extension (e.g.
     /// <c>L307 - B SIDE _Cell4</c>, from <see cref="ProgramName"/> minus <c>.PW4</c>) to get the summary for
     /// that one lot. Omit for the Entire Machine Status.</param>
-    public void RequestProductionCount(DateTime now, string? pwbName = null)
+    public void RequestProductionCount(DateTime now, string? pwbName = null, double timeoutSec = 8)
     {
         _reportBuf.Clear();
         _collectingReport = true;
         _reportKind = ReportKind.Production;
-        _reportTimeoutSec = 8;
+        _reportTimeoutSec = timeoutSec;   // 8s is enough for the early PC field; raise it to reach late fields (ET/PT)
         _reportStart = now;
         LastReportError = null;
         // SI-F manual 6.2.2: "C1Mmmm" ALONE = Entire Machine Status ("If the data name is not added, the
@@ -148,6 +153,7 @@ public sealed class MachineChannel
     {
         if (_reportKind == ReportKind.Production)
         {
+            RawProductionReport = text;
             if (SonyProductionReport.CompletedPwbs(text) is int v) { CompletedPwbs = v; CompletedPwbsAt = now; ProductionCountRead?.Invoke(v); }
         }
         else if (_reportKind == ReportKind.Supply)

@@ -262,8 +262,11 @@ app.MapGet("/api/staged", (LineService line) =>
 // reports to stream back, and returns the counts. Read-only on the machine (C1M000 does NOT clear).
 // ?pwb=<name>  request the summary for one PWB file (name WITHOUT extension); ?pwb=auto uses each
 //              machine's own loaded program name. Omit for the Entire Machine Status.
-// ?waitMs=N    how long to let the report stream back (default 10s; the channel's own timeout is 8s).
-app.MapPost("/api/machinecount", async (LineService line, int? machine, string? pwb, int? waitMs) =>
+// ?waitMs=N    how long to let the report stream back (default 10s).
+// ?timeoutSec=N  channel collection window (default 8s — enough for the early PC count). The machine's OWN
+//              Cycle Time (ET) and PWB-Waiting Time (PT) fields are near the END of the ~30s report, so to
+//              read those pass ?pwb=auto&timeoutSec=45&waitMs=50000.
+app.MapPost("/api/machinecount", async (LineService line, int? machine, string? pwb, int? waitMs, int? timeoutSec) =>
 {
     var now = DateTime.Now;
     var targets = line.Listeners.Where(l => machine is null || l.Channel.Machine == machine).ToList();
@@ -277,7 +280,7 @@ app.MapPost("/api/machinecount", async (LineService line, int? machine, string? 
             var dot = prog?.LastIndexOf('.') ?? -1;
             name = dot > 0 ? prog![..dot] : prog;
         }
-        l.Channel.RequestProductionCount(now, name);
+        l.Channel.RequestProductionCount(now, name, timeoutSec ?? 8);
     }
     await Task.Delay(waitMs ?? 10000);   // let the C1M report(s) stream back over serial
     return Results.Ok(new
@@ -288,10 +291,14 @@ app.MapPost("/api/machinecount", async (LineService line, int? machine, string? 
             machine = l.Channel.Machine,
             completedPwbs = l.Channel.CompletedPwbs,
             at = l.Channel.CompletedPwbsAt == default ? (DateTime?)null : l.Channel.CompletedPwbsAt,
+            // The machine's OWN reported per-lot Cycle Time (ET) and PWB-Waiting/starvation time (PT), seconds.
+            cycleTimeSec = Pvs.Core.Serial.SonyProductionReport.Field(l.Channel.RawProductionReport, "ET"),
+            pwbWaitSec = Pvs.Core.Serial.SonyProductionReport.Field(l.Channel.RawProductionReport, "PT"),
             online = l.Channel.IsOnline,
             sent = l.Channel.LastReportCommand,
             error = l.Channel.LastReportError,
-            program = l.Channel.ProgramName
+            program = l.Channel.ProgramName,
+            rawReport = l.Channel.RawProductionReport
         }).ToList()
     });
 });
