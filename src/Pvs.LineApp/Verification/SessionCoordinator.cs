@@ -1311,6 +1311,26 @@ public sealed class SessionCoordinator : IDisposable
         }
     }
 
+    /// <summary>
+    /// Adopt the machine's count as the current lot's count — re-anchor so <see cref="LotPanels"/> == the given
+    /// panels. This TRUSTS the last machine's (M4/Cell4 = PCB-out) own counter over PVS's live R0 count, which
+    /// misses boards whenever PVS is off/restarting. Persisted so it survives a restart. Returns the count it set,
+    /// or -1 if there is no current lot.
+    /// </summary>
+    public int AdoptLotCount(int machinePanels, string reason)
+    {
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(_currentLotNo)) return -1;
+            _lotCountFor = _currentLotNo;
+            _lotAnchorTotal = _m4PanelsTotal - Math.Max(0, machinePanels);
+            _log.LogInformation("Lot count ADOPTED from machine: lot {Lot} -> {Panels} panels [{Reason}].",
+                _currentLotNo, machinePanels, reason);
+        }
+        SaveLotProgress();
+        return Math.Max(0, machinePanels);
+    }
+
     // A shift-change check is due from 5 min after each shift start (07:35 / 19:35), for a grace window,
     // so it can still run once an in-progress changeover finishes instead of being lost at one instant.
     private static readonly TimeSpan ShiftTriggerGrace = TimeSpan.FromMinutes(60);

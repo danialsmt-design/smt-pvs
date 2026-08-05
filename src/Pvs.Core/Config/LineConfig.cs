@@ -129,6 +129,12 @@ public sealed class LineConfig
     /// </summary>
     public int ReconcileMinutes { get; set; } = 20;
 
+    /// <summary>Trust the last machine's (M4/Cell4 = PCB-out) own counter as the authoritative lot count: when a
+    /// reconcile read shows the machine AHEAD of PVS (PVS missed boards while off/restarting), re-anchor PVS's
+    /// lot count up to the machine's. A lower machine value (an operator lot-end reset — a backwards step) is
+    /// NEVER auto-adopted. On by default. See CounterReconcilerService.</summary>
+    public bool TrustMachineCount { get; set; } = true;
+
     /// <summary>
     /// Child boards per panel, by model name. One machine cycle (a board-complete / R0) mounts a full
     /// PANEL, so per-cycle consumption of a feeder = ProductBOM.Quantity (per child board) × this factor.

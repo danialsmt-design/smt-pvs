@@ -699,6 +699,19 @@ app.MapPost("/api/email/test", async (Pvs.LineApp.Runtime.EmailSender email, Lin
     return Results.Ok(new { ok, gateway = email.IsGateway, message = ok ? "sent" : "not sent (see logs)" });
 });
 
+// Force the current lot count to a machine-reported value (M4 = PCB-out, the trusted number). ?panels=N or
+// ?boards=N. The reconciler does this automatically when M4 reads ahead; this is the manual/immediate lever.
+app.MapPost("/api/lot/adopt", (LineService line, int? panels, int? boards) =>
+{
+    if (line.Coordinator is null) return Results.Ok(new { ok = false, message = "coordinator not ready" });
+    int pp = line.Coordinator.PerPanel;
+    int p = panels ?? (boards is int b && pp > 0 ? (int)Math.Round((double)b / pp) : -1);
+    if (p < 0) return Results.Ok(new { ok = false, message = "pass ?panels=N or ?boards=N" });
+    int applied = line.Coordinator.AdoptLotCount(p, "manual /api/lot/adopt");
+    return Results.Ok(new { ok = applied >= 0, panels = applied, boards = applied * pp,
+        message = applied >= 0 ? "adopted machine count" : "no current lot to adopt" });
+});
+
 app.Run();
 
 record SendMailReq(string? Key, string[]? To, string? Subject, string? Body);

@@ -136,6 +136,18 @@ public sealed class CounterReconcilerService : IDisposable
                 }
             }
 
+            // TRUST THE LAST MACHINE (Cell4 = PCB-out) as the authoritative lot count. If it read AHEAD of PVS
+            // this pass — PVS missed boards while off/restarting — re-anchor PVS's lot count UP to the machine's.
+            // A LOWER machine value (an operator lot-end reset shows as a backwards step -> ResetDetected) is
+            // never adopted, so a reset can't wipe the count. Config-gated (TrustMachineCount, on by default).
+            if (_line.Config.TrustMachineCount && _line.Coordinator is not null)
+            {
+                int lastMachine = listeners.Select(l => l.Channel.Machine).DefaultIfEmpty(0).Max();
+                var lastRes = results.FirstOrDefault(r => r.Machine == lastMachine);
+                if (lastRes is not null && lastRes.ShouldAdoptMachineCount && lastRes.MachineCount is int mc)
+                    _line.Coordinator.AdoptLotCount(mc, $"reconcile: M{lastMachine} ahead of PVS");
+            }
+
             var spread = CounterReconciler.CrossMachineSpread(results);
             var run = new ReconcileRun(DateTime.Now, lot, trigger, rows,
                 spread?.Min, spread?.Max, spread?.Spread);
