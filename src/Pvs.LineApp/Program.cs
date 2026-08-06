@@ -53,6 +53,8 @@ builder.Services.AddSingleton<Pvs.LineApp.Runtime.EmailSender>();
 
 builder.Services.AddSingleton<LineService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<LineService>());
+// Emails the per-line shift report at each shift boundary (07:30 / 19:30), from inside the app — no operator PC.
+builder.Services.AddHostedService<Pvs.LineApp.Runtime.ShiftReportScheduler>();
 
 var app = builder.Build();
 
@@ -483,6 +485,23 @@ app.MapGet("/api/report/daily", async (LineService line, IReelPartRepository rep
         },
         machines
     });
+});
+
+// Manual trigger for the shift report email (to test without waiting for 07:30/19:30). Optional ?key=yyyy-MM-dd|Shift
+// picks a specific ended shift; otherwise the one just before the current boundary. Sends to this line's PICs.
+app.MapPost("/api/report/shift-email", async (LineService line, IReelPartRepository repo, Pvs.LineApp.Runtime.EmailSender email, string? key) =>
+{
+    if (line.ShiftUptime is null) return Results.Ok(new { ok = false, message = "uptime service not ready" });
+    var now = DateTime.Now;
+    var shifts = line.Config.ToShiftSchedule();
+    string endedKey;
+    if (!string.IsNullOrWhiteSpace(key)) endedKey = key!;
+    else { var cur = shifts.ShiftAt(now); var cs = now.Date + cur.Start.ToTimeSpan(); if (cs > now) cs = cs.AddDays(-1); endedKey = shifts.ShiftKey(cs.AddSeconds(-1)); }
+    line.ShiftUptime.EnsureArchivedThrough(now);
+    var summary = line.ShiftUptime.GetSummary(endedKey) ?? line.ShiftUptime.Current();
+    var report = await Pvs.LineApp.Runtime.ShiftReport.BuildAsync(line.Config, repo, summary);
+    var ok = await email.SendToPicsAsync(Pvs.LineApp.Runtime.ShiftReport.Subject(report), Pvs.LineApp.Runtime.ShiftReport.Body(report));
+    return Results.Ok(new { ok, key = endedKey, subject = Pvs.LineApp.Runtime.ShiftReport.Subject(report), boards = report.TotalBoards, lots = report.Lots.Count });
 });
 
 // ---- verification API (Stage 2) ----
