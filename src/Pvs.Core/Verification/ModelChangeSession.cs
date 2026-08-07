@@ -247,8 +247,8 @@ public sealed class ModelChangeSession
         return -1;
     }
 
-    private static bool PartsMatch(string a, string b) =>
-        string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
+    // Substitute-aware match: a slash in a BOM/feeder part number lists approved substitutes (see PartNumber).
+    private static bool PartsMatch(string a, string b) => PartNumber.Matches(a, b);
 
     private static ChangeStep Step(StepOutcome outcome, string message) => new(outcome, message);
 

@@ -175,8 +175,8 @@ public sealed class PartsChangeSession
         _ => string.Empty
     };
 
-    private static bool PartsMatch(string a, string b) =>
-        string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
+    // Substitute-aware match: a slash in a BOM/feeder part number lists approved substitutes (see PartNumber).
+    private static bool PartsMatch(string a, string b) => PartNumber.Matches(a, b);
 
     private ChangeStep Step(StepOutcome outcome, string message) => new(outcome, message);
 }
