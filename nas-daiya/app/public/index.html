@@ -72,8 +72,11 @@ function card(l){
   const machines = s.machines||[];
   const online = machines.filter(m=>m.online).length, total = machines.length;
   const producing = machines.filter(m=>m.boardsPerHour).length;
-  const out = num(d.totalOutput), tgt = num(d.targetShift);
-  const pct = (out!=null && tgt) ? Math.min(100, Math.round(out/tgt*100)) : null;
+  // UNITS: target (targetShift) is in PANELS; totalOutput is in BOARDS (pcs); machineCounter is PANELS.
+  // Compare like-for-like — panels vs the panel target — and show boards as a secondary figure.
+  const panels = num(d.machineCounter), boards = num(d.totalOutput), tgt = num(d.targetShift);
+  const out = panels;
+  const pct = (panels!=null && tgt) ? Math.min(100, Math.round(panels/tgt*100)) : null;
   const model = d.model || (machines.find(m=>m.model)||{}).model || '—';
   const live = d.live;
   const hourly = Array.isArray(d.hourly) ? d.hourly : [];
@@ -96,7 +99,7 @@ function card(l){
       ${healthPill(l.health)}
     </div>
     <div class="sub"><b>${esc(model)}</b> · ${esc(d.shift||'—')} shift${d.po?(' · PO '+esc(d.po)):''}</div>
-    <div class="big"><span class="out">${out!=null?out:'—'}</span><span class="tgt">/ ${tgt!=null?tgt:'—'} target${pct!=null?(' · '+pct+'%'):''}</span></div>
+    <div class="big"><span class="out">${out!=null?out:'—'}</span><span class="tgt">/ ${tgt!=null?tgt:'—'} panel target${pct!=null?(' · '+pct+'%'):''}${boards!=null?(' · '+boards+' boards'):''}</span></div>
     <div class="bar"><i class="${pct>=100?'done':''}" style="width:${pct||0}%"></i></div>
     ${hourly.length?`<div><div class="hrs">${hrsBars}</div><div class="hlbl">${hrsLbl}</div></div>`:''}
     <div class="row">
