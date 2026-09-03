@@ -1086,6 +1086,14 @@ public sealed class SessionCoordinator : IDisposable
             Note: producedBoards >= 0 ? $"lot set via dropdown; produced set to {producedBoards} boards" : "lot set via dropdown",
             LotNo: string.IsNullOrWhiteSpace(lotNo) ? _currentLotNo : lotNo), ct);
         _log.LogInformation("Lot set to {Lot} by {Sup} (produced={P}).", string.IsNullOrWhiteSpace(lotNo) ? "(auto)" : lotNo, badge.Name, producedBoards);
+
+        // PROGRAM-vs-LOT CHECK — the one command PVS deliberately transmits on its own (besides realtime-enable):
+        // on a lot set/change, ask each machine which program is loaded (C3P) and verify it matches the model this
+        // lot belongs to. Fire the C3P now; a moment later run the detect/verify against the fresh program name.
+        // (Minimal-serial: no rotation, no periodic C3P, no auto C1M — PVS is otherwise receive-only.)
+        foreach (var ch in _channels.Values) if (!IsMachineSkipped(ch.Machine)) ch.RequestProgram();
+        _ = Task.Run(async () => { try { await Task.Delay(2500); await AutoDetectModelAsync(); } catch { } });
+
         return string.IsNullOrWhiteSpace(lotNo)
             ? $"Lot tracking set to automatic by {badge.Name}."
             : $"Now tracking lot {lotNo} by {badge.Name}" + (producedBoards >= 0 ? $"; produced set to {producedBoards}." : ".");

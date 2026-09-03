@@ -285,14 +285,17 @@ public sealed class LineConfig
     /// <summary>Master switch for the AUTOMATIC per-feeder (C1Z) rotation — the background sweep that reads one
     /// machine's per-feeder pickups every ~45s. When OFF, PVS never auto-fires C1Z; the report is read ONLY on
     /// demand from the inventory page ("Stop machine → Read"). Runtime-togglable from the setup page (persisted to
-    /// auto-commands.json, applied live without a restart). On by default. See CounterReconcilerService.</summary>
-    public bool AutoC1z { get; set; } = true;
+    /// auto-commands.json, applied live without a restart). OFF by default: PVS is receive-mostly and does not poll
+    /// the machine for per-feeder data — read C1Z on demand from the serial page. See CounterReconcilerService.</summary>
+    public bool AutoC1z { get; set; } = false;
 
     /// <summary>Master switch for the AUTOMATIC production-count (C1M) reads — the periodic reconcile pass AND the
     /// board-complete-triggered capture that keep PVS's board count anchored to the machine's own counter. When
     /// OFF, PVS never auto-fires C1M; it is read ONLY on demand from the inventory page. Runtime-togglable from the
-    /// setup page (persisted, applied live). On by default. See CounterReconcilerService.</summary>
-    public bool AutoC1m { get; set; } = true;
+    /// setup page (persisted, applied live). OFF by default: PVS keeps its board count from the machine's own
+    /// realtime R0 board-complete frames (receive), not by polling C1M — read C1M on demand from the serial page.
+    /// See CounterReconcilerService.</summary>
+    public bool AutoC1m { get; set; } = false;
 
     /// <summary>
     /// APPLY the C1Z pickup model: snap each feeder's remaining to <c>start − attempted-since-load</c> on every
