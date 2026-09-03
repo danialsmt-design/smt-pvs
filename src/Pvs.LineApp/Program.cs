@@ -1451,7 +1451,7 @@ app.MapGet("/api/serial/trace", (LineService line, int? machine, long? after) =>
     return Results.Ok(new
     {
         machine = l.Channel.Machine,
-        entries = evts.Select(e => new { seq = e.Seq, t = e.T.ToString("HH:mm:ss.fff"), dir = e.Dir, text = e.Text })
+        entries = evts.Select(e => new { seq = e.Seq, t = e.T.ToString("HH:mm:ss.fff"), dir = e.Dir, text = e.Text, frame = e.Frame })
     });
 });
 

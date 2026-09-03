@@ -32,7 +32,9 @@ public sealed class SerialPortListener : IDisposable
         {
             var p = msg.Payload;
             bool bareAck = p is { Length: <= 2 } && p.Length > 0 && p[0] == 'A';
-            if (!bareAck) Trace("RX", p);
+            // RX frame in canonical form (STX + count + payload + checksum + ETX) — the wire format the machine
+            // uses, so the serial page can show the full frame + checksum for a received reply too.
+            if (!bareAck) Trace("RX", p, SafeFrame(p));
         };
     }
 
@@ -40,17 +42,31 @@ public sealed class SerialPortListener : IDisposable
     public string Port => _machineCfg.Port;
     public bool IsOpen => _port?.IsOpen ?? false;
 
-    // Live serial trace: a small per-machine ring of the last TX/RX frames, so the inventory page can show the
-    // command-send / reply-receive traffic in real time. Sequence-numbered so the UI can poll incrementally.
-    public readonly record struct SerialTrace(long Seq, DateTime T, string Dir, string Text);
+    // Live serial trace: a small per-machine ring of the last TX/RX frames, so the dedicated serial page can show the
+    // command-send / reply-receive traffic in real time — payload AND the full on-the-wire frame (hex, incl. STX,
+    // count, checksum, ETX). Sequence-numbered so the UI can poll incrementally.
+    public readonly record struct SerialTrace(long Seq, DateTime T, string Dir, string Text, string Frame);
     private readonly System.Collections.Concurrent.ConcurrentQueue<SerialTrace> _trace = new();
     private long _traceSeq;
     private const int TraceMax = 250;
-    private void Trace(string dir, string text)
+    private static string ToHex(string? frame)
+    {
+        if (string.IsNullOrEmpty(frame)) return "";
+        var sb = new System.Text.StringBuilder(frame.Length * 2);
+        foreach (char c in frame) sb.Append(((int)c & 0xFF).ToString("X2"));
+        return sb.ToString();
+    }
+    // Rebuild a payload into its canonical Sony frame (for display of a received reply); never throws.
+    private static string SafeFrame(string? payload)
+    {
+        try { return string.IsNullOrEmpty(payload) ? "" : Pvs.Core.Serial.SonyFrame.Build(payload); }
+        catch { return ""; }
+    }
+    private void Trace(string dir, string text, string? frame = null)
     {
         if (string.IsNullOrEmpty(text)) return;
         _trace.Enqueue(new SerialTrace(System.Threading.Interlocked.Increment(ref _traceSeq), DateTime.Now, dir,
-            text.Length > 160 ? text[..160] + "…" : text));
+            text.Length > 160 ? text[..160] + "…" : text, ToHex(frame)));
         while (_trace.Count > TraceMax && _trace.TryDequeue(out _)) { }
     }
     /// <summary>Trace entries with Seq &gt; <paramref name="afterSeq"/> (0 = all held), oldest-first.</summary>
@@ -134,7 +150,7 @@ public sealed class SerialPortListener : IDisposable
                 else
                     _log.LogInformation("M{Machine} {Port} SEND  payload=[{Payload}]  frame(hex)={Hex}",
                         _machineCfg.Machine, _machineCfg.Port, payload ?? "(unparsed)", hex.ToString());
-                if (!isAck) Trace("TX", payload ?? frame);   // live trace: real commands, not the A0/A2 line-acks
+                if (!isAck) Trace("TX", payload ?? frame, frame);   // live trace: real commands (+ full frame), not the A0/A2 line-acks
             }
             _port?.Write(frame);
         }

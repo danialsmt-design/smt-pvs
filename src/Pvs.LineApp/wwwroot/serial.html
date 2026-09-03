@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Serial Console — PVS</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--red:#D9635A;--blue:#5CA9E8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:12px 20px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:600}
+  a.lnk{color:var(--mut);text-decoration:none;font-size:13px}
+  header .sp{margin-left:auto}
+  main{padding:16px 20px;max-width:1100px;margin:0 auto;display:grid;gap:14px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:14px 16px}
+  .mtabs{display:flex;gap:8px;flex-wrap:wrap}
+  .mtab{background:var(--pan2);border:1px solid var(--ln);color:var(--mut);border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:600;font-size:15px}
+  .mtab.active{border-color:var(--acc);color:var(--ink);background:var(--pan)}
+  .prog{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13.5px;margin-top:10px}
+  .pill{padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:700;border:1px solid var(--ln);background:var(--pan2)}
+  .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.bad{color:var(--red);border-color:var(--red)} .pill.wait{color:var(--mut)}
+  .mono{font-family:Consolas,monospace}
+  .send{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:8px;padding:8px 13px;cursor:pointer;font:14px inherit;font-weight:600}
+  button.q{background:var(--pan2);border-color:var(--ln);color:var(--ink)}
+  button:disabled{opacity:.5;cursor:default}
+  input#cmd{flex:1;min-width:220px;background:#0B100D;border:1px solid var(--ln);color:var(--ink);border-radius:8px;padding:9px 11px;font:14px Consolas,monospace}
+  .muted{color:var(--mut);font-size:12.5px}
+  /* log */
+  #log{height:56vh;overflow-y:auto;background:#0B100D;border:1px solid var(--ln);border-radius:8px;padding:8px 10px;font:12.5px/1.5 Consolas,monospace}
+  .e{padding:5px 0;border-bottom:1px solid #131A16}
+  .e .hd{display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+  .e .tm{color:#5C7268;flex:0 0 auto}
+  .e .dr{font-weight:700;flex:0 0 30px}
+  .e.tx .dr{color:var(--acc)} .e.rx .dr{color:var(--blue)}
+  .e.err .pl,.e.err .dr{color:var(--red)}
+  .e .pl{color:var(--ink);word-break:break-all}
+  .e .fr{margin:3px 0 0 39px;color:var(--mut);font-size:11.5px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .b{padding:1px 5px;border-radius:4px;border:1px solid var(--ln);white-space:nowrap}
+  .b.stx,.b.etx{color:#6E8377} .b.cnt{color:var(--blue)} .b.pay{color:var(--ink)} .b.cks{color:var(--acc)}
+  .ck{font-weight:700} .ck.ok{color:var(--ok)} .ck.bad{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Serial Console</h1>
+  <span class="muted" id="line">—</span>
+  <span class="sp"></span>
+  <a class="lnk" href="/machine-inv.html">Machine inv</a> &nbsp;<a class="lnk" href="/setup.html">Model &amp; lot</a> &nbsp;<a class="lnk" href="/">Monitor</a>
+</header>
+
+<main>
+  <div class="card">
+    <div class="mtabs" id="mtabs"></div>
+    <div class="prog">
+      <span>Machine program: <b class="mono" id="prog">—</b></span>
+      <span>Running lot: <b class="mono" id="lot">—</b></span>
+      <span id="matchPill" class="pill wait">program vs lot —</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="send">
+      <span class="muted">Quick read:</span>
+      <button class="q" onclick="quick('C3P')" title="Ask which program is loaded">C3P · program</button>
+      <button class="q" onclick="quick('C1M')" title="Board count (Sum by Lot)">C1M · board count</button>
+      <button class="q" onclick="quick('C1Z')" title="Per-feeder pickups">C1Z · feeders</button>
+      <span class="sp" style="margin-left:auto"></span>
+      <label class="muted" style="text-transform:none"><input type="checkbox" id="autoscroll" checked style="vertical-align:middle"> auto-scroll</label>
+      <button class="q" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="send" style="margin-top:9px">
+      <input id="cmd" placeholder="type a read command, e.g. C1M000P&lt;program&gt;  |  C3P" spellcheck="false" onkeydown="if(event.key==='Enter')send()">
+      <button onclick="send()" id="sendBtn">Send</button>
+    </div>
+    <div class="muted" id="sendMsg" style="margin-top:7px;min-height:15px">Read-only: only <b>C1*</b> (reports) and <b>C3*</b> (queries) are allowed — PVS never sends a control command to the machine.</div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <strong style="font-size:14px">Live serial — full frames</strong>
+      <span class="muted">TX = PVS→machine · RX = machine→PVS · frame = STX · count · payload · checksum · ETX</span>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let machine = 1, progName = '';
+
+function tabs(){ const mt=$('mtabs'); mt.innerHTML='';
+  [1,2,3,4].forEach(m=> mt.insertAdjacentHTML('beforeend',
+    `<button class="mtab ${m===machine?'active':''}" onclick="pick(${m})">Machine ${m}</button>`)); }
+function pick(m){ machine=m; tabs(); clearLog(); refreshStatus(); }
+
+// ---- program vs lot ----
+async function refreshStatus(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+    $('line').textContent = s.line || '';
+    const mm = (s.machines||[]).find(x=>x.machine===machine);
+    progName = mm && mm.program ? mm.program.replace(/\.PW\w+$/i,'') : '';
+    $('prog').textContent = mm && mm.program ? mm.program : '— (none loaded)';
+    // running lot (line-level)
+    let lot=''; try{ const lo=await (await fetch('/api/lot/options')).json(); lot = lo.selected||''; }catch(e){}
+    $('lot').textContent = lot || '—';
+    // program-vs-lot indicator: does the program's model token appear consistent with a lot being set
+    const model = (mm && mm.model) ? mm.model : '';
+    const pill = $('matchPill');
+    if(!mm || !mm.program){ pill.className='pill bad'; pill.textContent='program vs lot — no program on machine'; }
+    else if(!lot){ pill.className='pill wait'; pill.textContent='program vs lot — no lot set'; }
+    else { pill.className='pill ok'; pill.textContent='program loaded · lot set'; }
+  }catch(e){}
+}
+
+// ---- send ----
+function quick(kind){
+  let c = kind;
+  if(kind==='C1M') c = progName ? ('C1M000P'+progName) : 'C1M000';
+  else if(kind==='C1Z') c = progName ? ('C1Z000P'+progName) : 'C1Z000';
+  else if(kind==='C3P') c = 'C3P';
+  $('cmd').value = c; send();
+}
+let busy=false;
+async function send(){
+  if(busy) return; const cmd=$('cmd').value.trim(); if(!cmd) return;
+  if(!/^C[13]/i.test(cmd)){ $('sendMsg').innerHTML='<span style="color:var(--red)">Blocked — only C1*/C3* read commands are allowed.</span>'; return; }
+  busy=true; $('sendBtn').disabled=true; $('sendMsg').textContent='Sending '+cmd+' to machine '+machine+'…';
+  try{
+    const r = await (await fetch('/api/console/send?machine='+machine+'&waitMs=8000&cmd='+encodeURIComponent(cmd),{method:'POST'})).json();
+    $('sendMsg').textContent = r.error ? ('Error: '+r.error) : ('Sent. '+(r.reply?('Reply: '+r.reply):'watch the log for the reply.'));
+  }catch(e){ $('sendMsg').textContent='Send failed: '+e; }
+  busy=false; $('sendBtn').disabled=false;
+}
+
+// ---- live full-frame log ----
+let seq=0;
+function clearLog(){ seq=0; $('log').innerHTML=''; }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// hex -> ASCII (for count/checksum bytes)
+function hx2a(h){ let s=''; for(let i=0;i+1<h.length;i+=2) s+=String.fromCharCode(parseInt(h.substr(i,2),16)); return s; }
+// break a frame hex into STX | count | payload | checksum | ETX and verify the checksum
+function decodeFrame(hex){
+  if(!hex || hex.length<8) return null;
+  const stx=hex.slice(0,2), etx=hex.slice(-2);
+  const cnt=hex.slice(2,6);                    // 2 ASCII chars
+  const cks=hex.slice(-6,-2);                  // 2 ASCII chars before ETX
+  const pay=hex.slice(6,-6);
+  const cntTxt=hx2a(cnt), cksTxt=hx2a(cks);
+  // checksum = 2's complement of (sum of count+payload ASCII bytes) low byte
+  let sum=0; const cp=cnt+pay; for(let i=0;i+1<cp.length;i+=2) sum+=parseInt(cp.substr(i,2),16);
+  const calc=((0x100-(sum&0xFF))&0xFF).toString(16).toUpperCase().padStart(2,'0');
+  return {stx,cnt,cntTxt,pay,payTxt:hx2a(pay),cks,cksTxt,calc,etx,ok:(cksTxt.toUpperCase()===calc)};
+}
+function render(e){
+  const isErr=/^A[345]/.test(e.text);
+  const d=decodeFrame(e.frame);
+  let fr='';
+  if(d){
+    const ck = d.ok ? `<span class="ck ok">${esc(d.cksTxt)} ✓</span>` : `<span class="ck bad">${esc(d.cksTxt)} ✗ calc ${d.calc}</span>`;
+    fr=`<div class="fr">
+      <span class="b stx">STX ${d.stx}</span>
+      <span class="b cnt">count ${d.cnt} =“${esc(d.cntTxt)}”</span>
+      <span class="b pay">payload ${d.pay||'—'}</span>
+      <span class="b cks">cksum ${d.cks} ${ck}</span>
+      <span class="b etx">ETX ${d.etx}</span>
+    </div>`;
+  } else if(e.frame){ fr=`<div class="fr"><span class="b">${esc(e.frame)}</span></div>`; }
+  return `<div class="e ${e.dir==='TX'?'tx':'rx'}${isErr?' err':''}">
+      <div class="hd"><span class="tm">${e.t}</span><span class="dr">${e.dir}</span><span class="pl">${esc(e.text)}</span></div>${fr}
+    </div>`;
+}
+async function poll(){
+  try{
+    const r = await (await fetch('/api/serial/trace?machine='+machine+'&after='+seq)).json();
+    if(r.entries && r.entries.length){
+      const box=$('log'); let html='';
+      r.entries.forEach(e=>{ seq=Math.max(seq,e.seq); html+=render(e); });
+      box.insertAdjacentHTML('beforeend',html);
+      while(box.childElementCount>500) box.removeChild(box.firstChild);
+      if($('autoscroll').checked) box.scrollTop=box.scrollHeight;
+    }
+  }catch(e){}
+  setTimeout(poll,1000);
+}
+tabs(); refreshStatus(); setInterval(refreshStatus,4000); poll();
+</script>
+</body>
+</html>
