@@ -29,11 +29,17 @@ public sealed class MachineChannel
         _send = send ?? throw new ArgumentNullException(nameof(send));
         PartsOut = new PartsOutDetector(machine, partsOutDedupe);
         BoardRate = new BoardRateTracker(boardRateWindow);
+        Condition = new MachineConditionTracker();
         Inventory = new MachineInventory(machine);
     }
 
     public int Machine { get; }
     public bool IsOnline { get; private set; }
+
+    /// <summary>The machine's live operating condition, latched from its own Sony R1 stream — the honest
+    /// "is it mounting" signal (unlike <see cref="BoardRate"/>, which is a productive-time rate that holds its
+    /// last value when the line stops).</summary>
+    public MachineConditionTracker Condition { get; }
 
     /// <summary>The production program (.PWB) name the machine last reported via a C3P query, or null.</summary>
     public string? ProgramName { get; private set; }
@@ -49,15 +55,42 @@ public sealed class MachineChannel
     /// <summary>One board finished on this machine.</summary>
     public event Action<DateTime>? BoardCompleted;
 
+    // Last time C5RO (real-time enable) was actually sent. During AUTO production the machine A4E00s every C5RO
+    // (manual Appendix F), and that stray A4E00 lands in a report read and kills it — so we must NOT re-blast it.
+    private DateTime _lastC5Ro;
+    // Serial pipeline — "reports own the line". Housekeeping (C3P program refresh, C5RO real-time enable) is held
+    // off until this time; a report read sets it for the read's duration so the C1M/C1Z gets a CLEAN serial window
+    // with nothing else on the wire. Real-time ACKs (A0/A2) are NOT housekeeping and still flow — they are protocol
+    // responses the machine requires, and are what the pipeline treats as top priority (sent inline, never queued).
+    private DateTime _suppressHousekeepingUntil;
+    /// <summary>Hold off C3P/C5RO housekeeping for <paramref name="d"/> (extends, never shortens) — a report read
+    /// calls this so it owns the serial for its window. Reports set it automatically; a retry burst re-sets it.</summary>
+    public void SuppressHousekeeping(TimeSpan d) { var u = DateTime.Now + d; if (u > _suppressHousekeepingUntil) _suppressHousekeepingUntil = u; }
+    private bool HousekeepingHeld(DateTime now) => _collectingReport || now < _suppressHousekeepingUntil;
+
+    private void EnableRealtime(DateTime now)
+    {
+        if (HousekeepingHeld(now)) return;                   // a report owns the line / never step on a dump
+        if ((now - _lastC5Ro) < TimeSpan.FromMinutes(3)) return;   // already sent recently — real-time is on
+        _lastC5Ro = now;
+        _send(SonyFrame.Build("C5RO"));
+    }
+
     /// <summary>Call once when the port opens: switches the machine to real-time reporting.</summary>
-    public void Start() => _send(SonyFrame.Build("C5RO"));
+    public void Start() { _lastC5Ro = default; EnableRealtime(DateTime.Now); }
+
+    /// <summary>True while a C1M/C1Z report is streaming in. NOTHING else may be sent to the machine during this
+    /// window (only the report's own A0 acks) — a C3P or C5RO fired mid-report interrupts the D0 dump and the read
+    /// fails with A4E00. Both the auto-detect C3P and the R1OL C5RO check this.</summary>
+    public bool IsCollectingReport => _collectingReport;
 
     /// <summary>
     /// Ask the machine which production program is loaded (C3P). The machine replies with a D0 data
     /// message carrying the "&lt;name&gt;.PWB" file name, which lands in <see cref="ProgramName"/>.
     /// (The reply is auto-acked with A2 like any D message, which is the C3P termination the manual requires.)
+    /// SKIPPED while a report is collecting — a C3P mid-report kills the D0 dump.
     /// </summary>
-    public void RequestProgram() => _send(SonyFrame.Build("C3P"));
+    public void RequestProgram() { if (!HousekeepingHeld(DateTime.Now)) _send(SonyFrame.Build("C3P")); }
 
     /// <summary>The machine's own "Number of Completed PWBs" (the <c>PC</c> field of its C1M Production Report) —
     /// its authoritative board counter, which keeps counting even while PVS is off. Null until first read.</summary>
@@ -70,6 +103,20 @@ public sealed class MachineChannel
     /// <summary>Board-completes (machine cycles = PANELS) this channel has observed since it started.
     /// PVS's own count — contrast <see cref="CompletedPwbs"/>, the machine's internal counter.</summary>
     public int BoardsSeen { get; private set; }
+
+    /// <summary>The transaction ID of the last real-time message decoded from this machine (SI-F stamps every
+    /// R0/R1/R2 with a monotonic "…TI&lt;n&gt;"), or null if the machine doesn't send one. Used only to detect
+    /// blind spots — a jump means PVS missed messages while a serial link was down.</summary>
+    public long? LastTxnId { get; private set; }
+    /// <summary>Cumulative count of real-time messages PVS is confident it MISSED (gaps in the transaction ID)
+    /// since the channel started. Non-zero means PVS's live board count may be short — read the machine's own
+    /// counter (C1M) to get the truth. Zero when the machine sends no transaction ID (the detector is inert).</summary>
+    public int SuspectedMissedMessages { get; private set; }
+    /// <summary>When the most recent transaction-ID gap was seen (a serial blind spot). Default if none.</summary>
+    public DateTime LastGapAt { get; private set; }
+    /// <summary>Raised on a transaction-ID gap; the argument is how many real-time messages were skipped. A
+    /// listener (the reconciler) uses it to force an authoritative C1M read rather than trust the live count.</summary>
+    public event Action<int>? CountGapSuspected;
 
     /// <summary>The exact C1M command string last sent — for diagnosing rejects.</summary>
     public string? LastReportCommand { get; private set; }
@@ -90,9 +137,15 @@ public sealed class MachineChannel
     /// <summary>Raised when a fresh C1Z per-feeder report is read from the machine.</summary>
     public event Action<string>? SupplyReportRead;
 
+    /// <summary>Raw text of the last MANUAL console command's reply (the diagnostic send/receive page). Whatever
+    /// D0 the machine streamed back, verbatim; null until first console read.</summary>
+    public string? RawConsoleReport { get; private set; }
+    /// <summary>When <see cref="RawConsoleReport"/> was last read.</summary>
+    public DateTime ConsoleReportAt { get; private set; }
+
     // Report collection is shared by C1M (production count) and C1Z (per-supply-location). Only one report is
     // in flight at a time; the kind decides how the accumulated D0 text is parsed when it completes.
-    private enum ReportKind { None, Production, Supply }
+    private enum ReportKind { None, Production, Supply, Raw }
     private ReportKind _reportKind = ReportKind.None;
     private double _reportTimeoutSec = 8;
     private bool _collectingReport;
@@ -112,6 +165,10 @@ public sealed class MachineChannel
     /// that one lot. Omit for the Entire Machine Status.</param>
     public void RequestProductionCount(DateTime now, string? pwbName = null, double timeoutSec = 8)
     {
+        // One report at a time — don't stomp a read genuinely in flight (serial pipeline). But never lock out
+        // future reads: if the prior collection is already past its own timeout (machine went silent), let this one
+        // proceed and re-initialise below.
+        if (_collectingReport && (now - _reportStart).TotalSeconds < _reportTimeoutSec + 5) return;
         _reportBuf.Clear();
         _collectingReport = true;
         _reportKind = ReportKind.Production;
@@ -137,6 +194,10 @@ public sealed class MachineChannel
     /// </summary>
     public void RequestSupplyReport(DateTime now, string? pwbName = null, double timeoutSec = 60)
     {
+        // One report at a time — don't stomp a read genuinely in flight (serial pipeline). But never lock out
+        // future reads: if the prior collection is already past its own timeout (machine went silent), let this one
+        // proceed and re-initialise below.
+        if (_collectingReport && (now - _reportStart).TotalSeconds < _reportTimeoutSec + 5) return;
         _reportBuf.Clear();
         _collectingReport = true;
         _reportKind = ReportKind.Supply;
@@ -146,6 +207,28 @@ public sealed class MachineChannel
         var cmd = string.IsNullOrWhiteSpace(pwbName) ? "C1Z000" : "C1Z000P" + pwbName.Trim();
         LastReportCommand = cmd;
         _send(SonyFrame.Build(cmd));
+    }
+
+    /// <summary>
+    /// MANUAL diagnostic send: fire an arbitrary Sony command frame and collect whatever D0 stream comes back,
+    /// verbatim, into <see cref="RawConsoleReport"/>. This is the send/receive console the operator drives by hand
+    /// on a stopped line — READ commands only (the caller whitelists the payload); no parsing, no side effects on
+    /// counts/feeders/lot. Same isolated collection path as C1M/C1Z: only D0 report-line acking changes.
+    /// </summary>
+    public void RequestConsole(DateTime now, string payload, double timeoutSec = 60)
+    {
+        // One report at a time — don't stomp a read genuinely in flight (serial pipeline). But never lock out
+        // future reads: if the prior collection is already past its own timeout (machine went silent), let this one
+        // proceed and re-initialise below.
+        if (_collectingReport && (now - _reportStart).TotalSeconds < _reportTimeoutSec + 5) return;
+        _reportBuf.Clear();
+        _collectingReport = true;
+        _reportKind = ReportKind.Raw;
+        _reportTimeoutSec = timeoutSec;
+        _reportStart = now;
+        LastReportError = null;
+        LastReportCommand = payload;
+        _send(SonyFrame.Build(payload));
     }
 
     /// <summary>Parse/store the finished report text according to what was requested, then reset the kind.</summary>
@@ -159,6 +242,10 @@ public sealed class MachineChannel
         else if (_reportKind == ReportKind.Supply)
         {
             RawSupplyReport = text; SupplyReportAt = now; SupplyReportRead?.Invoke(text);
+        }
+        else if (_reportKind == ReportKind.Raw)
+        {
+            RawConsoleReport = text; ConsoleReportAt = now;
         }
         _reportKind = ReportKind.None;
     }
@@ -222,6 +309,26 @@ public sealed class MachineChannel
 
         MessageReceived?.Invoke(msg, now);
 
+        // --- transaction-ID gap detection (serial blind-spot) ---
+        // SI-F numbers every real-time message per machine. If the next TxnId we see jumps past LastTxnId+1,
+        // the machine sent messages we never got (a dropped/again-online link) — some of which may be board-
+        // completes, so PVS's live count is now possibly short. Record the gap and raise the event so the
+        // reconciler goes and reads the machine's own C1M counter (the truth). A LOWER TxnId means the machine
+        // restarted its numbering (power cycle) — re-baseline, don't count that as a gap. Never touches the
+        // count itself; this only flags "go verify". Inert when the machine sends no TxnId (LastTxnId stays null).
+        if (msg.TxnId is long tx)
+        {
+            if (LastTxnId is long prev && tx > prev + 1)
+            {
+                int missed = (int)Math.Min(tx - prev - 1, int.MaxValue);
+                SuspectedMissedMessages += missed;
+                LastGapAt = now;
+                CountGapSuspected?.Invoke(missed);
+            }
+            // tx <= prev (re-baseline / rollover) or contiguous: just advance the marker.
+            LastTxnId = tx;
+        }
+
         // C3P reply: the loaded production program name arrives as a D0 data message. The extension is
         // cell-specific — ".PW1".."PW4" per machine, or ".PWB" — so match ".PW" generally.
         if (msg.Payload.StartsWith("D0", StringComparison.Ordinal) &&
@@ -234,8 +341,12 @@ public sealed class MachineChannel
         // a board completing). R1FL is the explicit off-line transition.
         if (msg.Kind == MessageKind.Status && msg.StatusCode is "OL")
         {
+            // Came on-line — re-enable real-time. Do NOT clear the cached program name here: a stopped machine can
+            // refuse C3P (A4E00), so blanking it would leave PVS with no program until the machine runs again. The
+            // program only changes at a model change / new lot (never mid-lot, and never on a mere online blip), so
+            // the last-known name is kept until it is genuinely re-learned (startup, or an explicit change).
             IsOnline = true;
-            _send(SonyFrame.Build("C5RO"));
+            EnableRealtime(now);   // cooldown-guarded: don't re-blast C5RO (A4E00 during AUTO production pollutes reads)
         }
         else if (msg.Kind == MessageKind.Status && msg.StatusCode is "FL")
         {
@@ -248,6 +359,7 @@ public sealed class MachineChannel
         }
 
         BoardRate.Observe(msg, now);
+        Condition.Observe(msg, now);   // latch the machine's own operating state (R1 stream)
 
         if (msg.Kind == MessageKind.BoardComplete)
         {

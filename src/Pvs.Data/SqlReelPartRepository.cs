@@ -10,18 +10,46 @@ namespace Pvs.Data;
 /// Every query is parameterised. All SQL here is SELECT-only — this type never writes.
 /// Queries validated against live data (2026-07-23).
 /// </summary>
-public sealed class SqlReelPartRepository : IReelPartRepository
+public sealed partial class SqlReelPartRepository : IReelPartRepository
 {
-    private readonly string _connectionString;
+    private readonly string _connectionString;          // primary DB link
+    private readonly string? _fallback;                  // second route to the SAME DB (e.g. Tailscale IP); null = none
+    private volatile bool _preferFallback;               // sticky: after a fail-over, try the working link first
 
-    public SqlReelPartRepository(string connectionString)
-        => _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
+    public SqlReelPartRepository(string connectionString, string? fallbackConnectionString = null)
+    {
+        _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
+        _fallback = string.IsNullOrWhiteSpace(fallbackConnectionString) ? null : fallbackConnectionString;
+    }
 
+    /// <summary>Opens a connection over the preferred link; on a connect failure, fails over to the second link
+    /// (if configured) and sticks to whichever answered. Both down → the error propagates (the caller retries; a
+    /// production write just stays queued on the line). Single-link config behaves exactly as before.</summary>
     private async Task<SqlConnection> OpenAsync(CancellationToken ct)
     {
-        var cn = new SqlConnection(_connectionString);
-        await cn.OpenAsync(ct);
-        return cn;
+        string first = _preferFallback && _fallback is not null ? _fallback : _connectionString;
+        string? second = _fallback is null ? null : (_preferFallback ? _connectionString : _fallback);
+        try
+        {
+            var cn = new SqlConnection(first);
+            await cn.OpenAsync(ct);
+            return cn;
+        }
+        catch when (second is not null && !ct.IsCancellationRequested)
+        {
+            var cn = new SqlConnection(second);
+            await cn.OpenAsync(ct);          // if this also throws, both links are down — propagate
+            _preferFallback = !_preferFallback;   // stick to the link that just worked
+            return cn;
+        }
+    }
+
+    public async Task<bool> PingAsync(CancellationToken ct = default)
+    {
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand("SELECT 1", cn);
+        var r = await cmd.ExecuteScalarAsync(ct);
+        return r is not null;
     }
 
     public async Task<IReadOnlyList<Product>> GetProductsAsync(CancellationToken ct = default)
@@ -80,15 +108,28 @@ public sealed class SqlReelPartRepository : IReelPartRepository
 
     public async Task<Badge?> FindBadgeAsync(string badgeUid, CancellationToken ct = default)
     {
+        EnsureBadgeCacheLoaded();
         const string sql =
             @"SELECT LTRIM(RTRIM(ISNULL(UserID,''))) AS UserID, LTRIM(RTRIM(ISNULL(UserName,''))) AS UserName, ISNULL(AccessLevel,'') AS AccessLevel
               FROM Users WHERE LTRIM(RTRIM(UserUID)) = LTRIM(RTRIM(@uid))";
-        await using var cn = await OpenAsync(ct);
-        await using var cmd = new SqlCommand(sql, cn);
-        cmd.Parameters.AddWithValue("@uid", badgeUid ?? string.Empty);
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        if (!await r.ReadAsync(ct)) return null;
-        return new Badge(r.GetString(0), r.GetString(1), r.GetString(2));
+        try
+        {
+            await using var cn = await OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.AddWithValue("@uid", badgeUid ?? string.Empty);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            if (!await r.ReadAsync(ct)) return null;   // DB is up, badge genuinely unknown — do NOT fall back
+            var badge = new Badge(r.GetString(0), r.GetString(1), r.GetString(2));
+            CacheBadge(badgeUid, badge);               // remember it so auth survives a later DB outage
+            return badge;
+        }
+        catch (Exception)
+        {
+            // Both DB routes are down. Fall back to the LOCAL badge cache so operator/supervisor auth — and the
+            // parts-exchange it gates — is never blocked by a DB outage. Null only if this badge was never seen
+            // while the DB was up (the periodic PreloadBadgesAsync keeps the cache complete).
+            return CachedBadge(badgeUid);
+        }
     }
 
     public async Task<ReelInfo?> FindReelAsync(string partUid, string partNumber, CancellationToken ct = default)
@@ -245,6 +286,78 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         return v is null or DBNull ? (int?)null : Convert.ToInt32(v);
     }
 
+    public async Task<LotSizeRow?> GetLotSizeAsync(string lotNo, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(lotNo)) return null;
+        // RAW columns only — which one is the real lot size is LotSizeResolver's decision, not SQL's, because a
+        // DELIVERED order carries its real figure in DeliveredQty with RevisedQty zeroed. Same row selection as
+        // GetLotTargetAsync (latest DocID for the PONumber) so the two can never disagree about WHICH row.
+        // DeliveredQty is queried by name and, if this database doesn't have the column, the query is retried
+        // without it (SQL error 207 = invalid column name) rather than taking the whole check down.
+        const string withDelivered =
+            @"SELECT TOP 1 LTRIM(RTRIM(ISNULL(PONumber,''))), LTRIM(RTRIM(ISNULL(Status,''))),
+                     Quantity, RevisedQty, DeliveredQty
+              FROM DeliveryDocuments
+              WHERE LTRIM(RTRIM(PONumber)) = LTRIM(RTRIM(@lot))
+              ORDER BY DocID DESC";
+        const string withoutDelivered =
+            @"SELECT TOP 1 LTRIM(RTRIM(ISNULL(PONumber,''))), LTRIM(RTRIM(ISNULL(Status,''))),
+                     Quantity, RevisedQty, NULL
+              FROM DeliveryDocuments
+              WHERE LTRIM(RTRIM(PONumber)) = LTRIM(RTRIM(@lot))
+              ORDER BY DocID DESC";
+        try { return await ReadLotSizeAsync(withDelivered, lotNo, ct); }
+        catch (SqlException ex) when (ex.Number == 207) { return await ReadLotSizeAsync(withoutDelivered, lotNo, ct); }
+    }
+
+    private async Task<LotSizeRow?> ReadLotSizeAsync(string sql, string lotNo, CancellationToken ct)
+    {
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@lot", lotNo.Trim());
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        return new LotSizeRow(r.GetString(0), r.GetString(1), NullableInt(r, 2), NullableInt(r, 3), NullableInt(r, 4));
+    }
+
+    private static int? NullableInt(SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToInt32(r.GetValue(i));
+
+    public async Task<LotBoardTally> GetLotBoardTallyAsync(string lotNo, string side, int line, CancellationToken ct = default)
+    {
+        var empty = new LotBoardTally(0, 0, 0, null, null);
+        if (string.IsNullOrWhiteSpace(lotNo)) return empty;
+        string s = (side ?? "").Trim();
+        // Same lot/side/line matching as GetProducedBoardsForLotAsync, but split by WHO wrote each row: PVS's own
+        // rows carry SenderIp='PVS'; the operator's application sends a real IP (e.g. 192.168.0.122) and a person's
+        // name. Anything that isn't literally 'PVS' is counted as the operator's — an unknown writer must not be
+        // silently folded into PVS's side of the comparison.
+        string sql =
+            @"SELECT ISNULL(SUM(CASE WHEN IsPvs = 1 THEN Qty ELSE 0 END),0)  AS PvsBoards,
+                     ISNULL(SUM(CASE WHEN IsPvs = 0 THEN Qty ELSE 0 END),0)  AS OperatorBoards,
+                     ISNULL(SUM(CASE WHEN IsPvs = 0 THEN 1   ELSE 0 END),0)  AS OperatorRows,
+                     MAX(CASE WHEN IsPvs = 0 THEN Op ELSE NULL END)          AS LastOperator,
+                     MAX(CASE WHEN IsPvs = 0 THEN Ip ELSE NULL END)          AS LastSenderIp
+              FROM (
+                SELECT ISNULL(Quantity,0) AS Qty,
+                       CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(SenderIp,'')))) = 'PVS' THEN 1 ELSE 0 END AS IsPvs,
+                       LTRIM(RTRIM(ISNULL(OperatorName,''))) AS Op,
+                       LTRIM(RTRIM(ISNULL(SenderIp,'')))     AS Ip
+                FROM DailyProductionCount
+                WHERE LTRIM(RTRIM(ISNULL(LotNo,''))) = LTRIM(RTRIM(@lot))
+                  AND LTRIM(RTRIM(Line)) = CAST(@line AS nvarchar(10))" +
+            (s.Length == 0 ? "" : " AND UPPER(LEFT(LTRIM(ISNULL(Side,'')),1)) = UPPER(@side)") + ") t";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@lot", lotNo.Trim());
+        cmd.Parameters.AddWithValue("@line", line);
+        if (s.Length > 0) cmd.Parameters.AddWithValue("@side", s.Substring(0, 1));
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return empty;
+        return new LotBoardTally(
+            Convert.ToInt32(r.GetValue(1)), Convert.ToInt32(r.GetValue(0)), Convert.ToInt32(r.GetValue(2)),
+            r.IsDBNull(3) ? null : r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4));
+    }
+
     public async Task<IReadOnlyDictionary<string, int>> GetIssuedForLotAsync(string lotNo, string side, int line, CancellationToken ct = default)
     {
         var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -312,6 +425,36 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         return list;
     }
 
+    public async Task<IReadOnlyList<IssuedReel>> GetReelsAtLineAsync(int line, int daysBack, CancellationToken ct = default)
+    {
+        var list = new List<IssuedReel>();
+        if (daysBack <= 0) daysBack = 30;
+        // Every reel issued to this line recently that still carries stock — ANY lot, ANY side. A reel belongs
+        // to the line it was issued to; the lot it was drawn against is bookkeeping, and lots turn over far
+        // faster than the physical rack does.
+        // StockOuts.Date is nvarchar 'dd-MM-yyyy' (style 105); TRY_CONVERT yields NULL on the malformed rows
+        // rather than failing the query, and those are simply excluded.
+        // Latest row per UID (ID DESC) because a reel is re-written each time its balance syncs.
+        const string sql =
+            @"SELECT Part, Uid, Qty FROM (
+                 SELECT LTRIM(RTRIM(ISNULL(PartNumber,''))) AS Part,
+                        LTRIM(RTRIM(ISNULL(PartUID,'')))    AS Uid,
+                        ISNULL(Quantity,0)                  AS Qty,
+                        ROW_NUMBER() OVER (PARTITION BY LTRIM(RTRIM(ISNULL(PartUID,''))) ORDER BY ID DESC) AS rn
+                 FROM StockOuts
+                 WHERE LTRIM(RTRIM(ISNULL(Line,''))) = CAST(@line AS nvarchar(10))
+                   AND TRY_CONVERT(date, Date, 105) >= DATEADD(day, -@days, CAST(GETDATE() AS date))
+               ) t WHERE rn = 1 AND Uid <> '' AND Qty > 0";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@line", line);
+        cmd.Parameters.AddWithValue("@days", daysBack);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new IssuedReel(r.GetString(0).Trim(), r.GetString(1).Trim(), r.IsDBNull(2) ? 0 : Convert.ToInt32(r.GetValue(2))));
+        return list;
+    }
+
     public async Task<LotOrder?> GetNextDeliveryLotAsync(string model, string side, int line, CancellationToken ct = default)
     {
         // Next lot to run = the earliest Planned (un-delivered) DeliveryDocuments order (PONumber == LotNo)
@@ -350,23 +493,30 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         return new LotOrder(po, target, dd);
     }
 
-    public async Task<IReadOnlyList<LotOrder>> GetLotOptionsAsync(string model, CancellationToken ct = default)
+    public async Task<IReadOnlyList<LotOrder>> GetLotOptionsAsync(string model, IReadOnlyList<string>? reopenLots = null, CancellationToken ct = default)
     {
         // Candidate lots for the manual dropdown: Planned (un-delivered) delivery orders for the model,
         // from a week back through the future, oldest first. Covers the currently-running lot + the ones ahead.
-        const string sql =
+        // reopenLots FORCE specific carry-over POs in past that 7-day window (e.g. a July lot whose B-side was
+        // never run) — still gated to the selected model + a non-Delivered status, so it can't surface anything else.
+        var reopen = (reopenLots ?? Array.Empty<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
+        string reopenClause = reopen.Count == 0 ? ""
+            : " OR LTRIM(RTRIM(ISNULL(PONumber,''))) IN (" + string.Join(",", reopen.Select((_, i) => "@r" + i)) + ")";
+        string sql =
             @"SELECT LTRIM(RTRIM(ISNULL(PONumber,''))) AS PONumber,
                      CASE WHEN ISNULL(RevisedQty,0) > 0 THEN RevisedQty ELSE ISNULL(Quantity,0) END AS Target,
                      DeliveryDate
               FROM DeliveryDocuments
               WHERE LTRIM(RTRIM(ISNULL(ProductName,''))) = LTRIM(RTRIM(@model))
                 AND (Status IS NULL OR LTRIM(RTRIM(Status)) <> 'Delivered')
-                AND DeliveryDate >= DATEADD(day, -7, CAST(GETDATE() AS date))
+                AND (DeliveryDate >= DATEADD(day, -7, CAST(GETDATE() AS date))" + reopenClause + @")
               ORDER BY DeliveryDate ASC, DocID ASC";
         var list = new List<LotOrder>();
         await using var cn = await OpenAsync(ct);
         await using var cmd = new SqlCommand(sql, cn);
         cmd.Parameters.AddWithValue("@model", model ?? string.Empty);
+        for (int i = 0; i < reopen.Count; i++) cmd.Parameters.AddWithValue("@r" + i, reopen[i]);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -417,6 +567,74 @@ public sealed class SqlReelPartRepository : IReelPartRepository
         await using var cmd = new SqlCommand(sql, cn);
         cmd.Parameters.AddWithValue("@uid", partUid ?? string.Empty);
         cmd.Parameters.AddWithValue("@q", quantity);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<string?> GetPartRankAsync(string partNumber, CancellationToken ct = default)
+    {
+        const string sql = "SELECT TOP 1 LTRIM(RTRIM(Rank)) FROM PartRanks WHERE LTRIM(RTRIM(PartNumber)) = LTRIM(RTRIM(@p))";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@p", partNumber ?? string.Empty);
+        var r = await cmd.ExecuteScalarAsync(ct);
+        var s = r as string;
+        return string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    }
+
+    public async Task<int> RecordConsumedReelAsync(ConsumedReel reel, CancellationToken ct = default)
+    {
+        // Idempotent: only insert if there is no OPEN (Restored=0) record for this UID already.
+        const string sql =
+            @"IF NOT EXISTS (SELECT 1 FROM ConsumedReels WHERE LTRIM(RTRIM(Uid)) = LTRIM(RTRIM(@uid)) AND Restored = 0)
+              INSERT INTO ConsumedReels (Uid, PartNumber, Rank, RemainingAtRetire, Line, LotNo, RetiredAt, Restored)
+              VALUES (@uid, @part, @rank, @rem, @line, @lot, GETDATE(), 0);";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@uid", reel.Uid ?? string.Empty);
+        cmd.Parameters.AddWithValue("@part", reel.PartNumber ?? string.Empty);
+        cmd.Parameters.AddWithValue("@rank", reel.Rank ?? string.Empty);
+        cmd.Parameters.AddWithValue("@rem", reel.RemainingAtRetire);
+        cmd.Parameters.AddWithValue("@line", reel.Line ?? string.Empty);
+        cmd.Parameters.AddWithValue("@lot", reel.LotNo ?? string.Empty);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<ConsumedReel?> GetActiveConsumedReelAsync(string uid, CancellationToken ct = default)
+    {
+        const string sql =
+            @"SELECT TOP 1 LTRIM(RTRIM(Uid)), LTRIM(RTRIM(PartNumber)), LTRIM(RTRIM(ISNULL(Rank,''))),
+                     ISNULL(RemainingAtRetire,0), ISNULL(Line,''), ISNULL(LotNo,'')
+              FROM ConsumedReels WHERE LTRIM(RTRIM(Uid)) = LTRIM(RTRIM(@uid)) AND Restored = 0 ORDER BY ID DESC;";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@uid", uid ?? string.Empty);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        return new ConsumedReel(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetString(4), r.GetString(5));
+    }
+
+    public async Task<int> MarkConsumedRestoredAsync(string uid, CancellationToken ct = default)
+    {
+        const string sql = @"UPDATE ConsumedReels SET Restored = 1, RestoredAt = GETDATE()
+                             WHERE LTRIM(RTRIM(Uid)) = LTRIM(RTRIM(@uid)) AND Restored = 0;";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@uid", uid ?? string.Empty);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<int> AddPartAttritionAsync(string partNumber, int pcsDelta, int reelDelta, CancellationToken ct = default)
+    {
+        const string sql =
+            @"MERGE dbo.PartAttrition AS t
+              USING (SELECT @p AS PartNumber) AS s ON LTRIM(RTRIM(t.PartNumber)) = LTRIM(RTRIM(s.PartNumber))
+              WHEN MATCHED THEN UPDATE SET AttritionPcs = AttritionPcs + @pcs, Reels = Reels + @reels, LastAt = GETDATE()
+              WHEN NOT MATCHED THEN INSERT (PartNumber, AttritionPcs, Reels, LastAt) VALUES (@p, @pcs, @reels, GETDATE());";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@p", partNumber ?? string.Empty);
+        cmd.Parameters.AddWithValue("@pcs", pcsDelta);
+        cmd.Parameters.AddWithValue("@reels", reelDelta);
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 }

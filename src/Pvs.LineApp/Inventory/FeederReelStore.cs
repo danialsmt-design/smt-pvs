@@ -52,6 +52,44 @@ public sealed class FeederReelStore
         lock (_gate) { return _map.Values.ToList(); }
     }
 
+    /// <summary>Sibling file holding the last unload snapshot, so a whole-line unload can be reversed.</summary>
+    private string BackupPath => _path + ".unload-backup.json";
+
+    /// <summary>
+    /// Whole-line UNLOAD (month-end return-to-store / new-model changeover): snapshot every feeder→reel mapping,
+    /// save it to a sibling backup so the unload can be reversed, then clear the map so no feeder is loaded.
+    /// Quantity is NOT stored or changed here — this only clears the feeder→reel MAPPING; each reel keeps its
+    /// StockOut count by UID. Returns the reels that were on feeders (the return manifest).
+    /// </summary>
+    public IReadOnlyList<FeederReel> ClearAll()
+    {
+        lock (_gate)
+        {
+            var snapshot = _map.Values.OrderBy(r => r.Machine).ThenBy(r => r.Feeder).ToList();
+            try { File.WriteAllText(BackupPath, JsonSerializer.Serialize(snapshot)); } catch { /* best-effort undo backup */ }
+            _map.Clear();
+            Save();
+            return snapshot;
+        }
+    }
+
+    /// <summary>Reverse the last unload: re-load the feeder→reel mapping from the saved backup. Returns the reels
+    /// restored (empty when there is no backup to restore from).</summary>
+    public IReadOnlyList<FeederReel> RestoreLastUnload()
+    {
+        lock (_gate)
+        {
+            List<FeederReel>? list = null;
+            try { if (File.Exists(BackupPath)) list = JsonSerializer.Deserialize<List<FeederReel>>(File.ReadAllText(BackupPath)); }
+            catch { list = null; }
+            if (list is null || list.Count == 0) return Array.Empty<FeederReel>();
+            foreach (var r in list)
+                if (!string.IsNullOrWhiteSpace(r.Uid)) _map[(r.Machine, r.Feeder)] = r;
+            Save();
+            return list;
+        }
+    }
+
     private void Load()
     {
         try

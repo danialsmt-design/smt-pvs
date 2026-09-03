@@ -33,7 +33,8 @@
 
   "badge": { "uidPrefix": "9999" },
 
-  // Pilot: both OFF. Turn on only after the operator-app / DPC handover for Line 5 (like Line 1).
+  // writeProductionCount ON — PVS is the DPC writer for this line (operator app stopped). Do NOT let a redeploy
+  // revert it to false: that silently stops production recording.
   "syncStockOuts": false,
-  "writeProductionCount": false
+  "writeProductionCount": true
 }

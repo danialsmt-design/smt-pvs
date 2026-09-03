@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Machine Production Report</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;--acc:#D9962A;--ok:#4FB477;--red:#D9635A}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  a.lnk{color:var(--mut);text-decoration:none;font-size:14px}
+  header .sp{margin-left:auto}
+  main{padding:18px 22px;max-width:940px;display:grid;gap:16px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:16px 18px}
+  .mtabs{display:flex;gap:8px;flex-wrap:wrap}
+  .mtab{background:var(--pan2);border:1px solid var(--ln);color:var(--mut);border-radius:8px;padding:10px 20px;cursor:pointer;font-weight:600;font-size:16px}
+  .mtab.active{border-color:var(--acc);color:var(--ink);background:var(--pan)}
+  button{background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:8px;padding:9px 15px;cursor:pointer;font:14px inherit;font-weight:600}
+  button.sec{background:var(--pan2);border-color:var(--ln);color:var(--ink);font-weight:500}
+  button:disabled{opacity:.55;cursor:default}
+  .muted{color:var(--mut);font-size:13px}
+  .rep{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  @media(max-width:720px){.rep{grid-template-columns:1fr}}
+  .col h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 8px;border-bottom:1px solid var(--ln);padding-bottom:6px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  td{padding:6px 4px;border-bottom:1px solid #131A16}
+  td.lab{color:var(--mut)}
+  td.val{text-align:right;font-family:Consolas,monospace;font-weight:600}
+  td.val.err{color:var(--red)}
+  .hdr{display:flex;gap:18px;flex-wrap:wrap;font-size:13.5px;color:var(--mut);margin-bottom:4px}
+  .hdr b{color:var(--ink)}
+  .msg{margin-top:10px;font-size:13.5px}
+  .empty{color:var(--mut);padding:16px 4px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Machine Production Report</h1>
+  <span class="muted" id="lot">—</span>
+  <span class="sp"></span>
+  <a class="lnk" href="/verify.html">Verify</a> &nbsp;<a class="lnk" href="/machine-inv.html">Inventory</a> &nbsp;<a class="lnk" href="/">Monitor</a>
+</header>
+
+<main>
+  <div class="card">
+    <div class="mtabs" id="mtabs"></div>
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button id="readbtn" onclick="readNow()" title="Ask this machine for its production report (C1M) now — takes ~1 min">📥 Read machine now</button>
+      <button class="sec" onclick="load()">↻ Refresh</button>
+      <span class="muted" id="cap"></span>
+    </div>
+    <div class="msg muted" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="hdr" id="rhdr"></div>
+    <div id="body"><div class="empty" id="empty">Select a machine, then “Read machine now”.</div></div>
+  </div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+let machine=null, last={};
+function tabs(){ const t=$('mtabs'); t.innerHTML=''; [1,2,3,4].forEach(m=>t.insertAdjacentHTML('beforeend',
+  `<button class="mtab ${m===machine?'active':''}" onclick="pick(${m})">Machine ${m}</button>`)); }
+function pick(m){ machine=m; tabs(); render(); }
+function ago(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso))/1000;
+  return s<90?Math.round(s)+'s ago':s<5400?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'; }
+
+async function load(){
+  try{ last = await (await fetch('/api/machinereport?machine='+ (machine||1) +'&retries=0',{method:'POST'})).json(); }catch(e){ return; }
+  $('lot').textContent = last.lot? ('lot '+last.lot):'no lot';
+  render();
+}
+function render(){
+  const m=(last.machines||[]).find(x=>x.machine===machine) || (last.machines||[])[0];
+  if(!m){ $('body').innerHTML='<div class="empty">No data yet — “Read machine now”.</div>'; $('rhdr').innerHTML=''; $('cap').textContent=''; return; }
+  const has = m.rows && m.rows.some(r=>r.value!=='—');
+  $('cap').textContent = m.capturedAt? ('report captured '+ago(m.capturedAt)) : (m.error? ('last read refused: '+m.error):'no report yet');
+  $('rhdr').innerHTML = `<span><b style="color:var(--acc)">SUM BY LOT</b> — ${last.lot||'no lot'}</span>`+
+    `<span>Program <b>${m.program||'—'}</b></span>`+
+    (has? `<span>Boards produced <b>${(m.boardsProduced||0).toLocaleString()}</b></span>`:'')+
+    (has? `<span>Attrition (miss+abn) <b>${m.attrition}</b></span>`:'');
+  if(!has){ $('body').innerHTML=`<div class="empty">Machine hasn't returned a report yet${m.error?(' ('+m.error+')'):''}. Press “Read machine now”.</div>`; return; }
+  const counts=m.rows.filter(r=>r.kind!=='t'), times=m.rows.filter(r=>r.kind==='t');
+  const tbl=list=>'<table>'+list.map(r=>`<tr><td class="lab">${r.label}</td><td class="val">${r.value}</td></tr>`).join('')+'</table>';
+  $('body').innerHTML=`<div class="rep">
+    <div class="col"><h2>Production &amp; pickups</h2>${tbl(counts)}</div>
+    <div class="col"><h2>Times</h2>${tbl(times)}</div>
+  </div>`;
+}
+async function readNow(){
+  if(!machine){ machine=1; tabs(); }
+  const b=$('readbtn'); b.disabled=true; const t=b.textContent; b.textContent='Reading… (~1 min)';
+  $('msg').textContent='Asking machine '+machine+' for its production report (C1M000P)…';
+  try{
+    last = await (await fetch('/api/machinereport?machine='+machine+'&retries=4',{method:'POST'})).json();
+    const m=(last.machines||[]).find(x=>x.machine===machine);
+    $('msg').textContent = (m && m.rows && m.rows.some(r=>r.value!=='—')) ? 'Report received.' :
+      ('No report'+(m&&m.error?(' — '+m.error+' (machine busy; try again)'):'')+'.');
+    $('lot').textContent = last.lot? ('lot '+last.lot):'no lot';
+    render();
+  }catch(e){ $('msg').textContent='Read failed: '+e; }
+  b.disabled=false; b.textContent=t;
+}
+tabs(); pick(1); load();
+</script>
+</body>
+</html>

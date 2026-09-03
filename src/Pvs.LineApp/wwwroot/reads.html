@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Auto Reads — PVS</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--red:#D9635A}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  a.lnk{color:var(--mut);text-decoration:none;font-size:14px}
+  header .sp{margin-left:auto}
+  main{padding:18px 22px;max-width:760px;display:grid;gap:16px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:18px 20px}
+  .card h2{font-size:15px;margin:0 0 4px;font-weight:600}
+  .row{display:flex;align-items:flex-start;gap:16px;padding:14px 0;border-bottom:1px solid #131A16}
+  .row:last-child{border-bottom:0}
+  .row .txt{flex:1}
+  .row .txt .t{font-weight:600;font-size:16px}
+  .row .txt .d{color:var(--mut);font-size:13.5px;margin-top:3px}
+  /* toggle */
+  .sw{position:relative;width:56px;height:30px;flex:0 0 auto;margin-top:3px}
+  .sw input{opacity:0;width:0;height:0}
+  .sl{position:absolute;inset:0;background:#3a2626;border:1px solid var(--ln);border-radius:30px;cursor:pointer;transition:.15s}
+  .sl:before{content:"";position:absolute;height:22px;width:22px;left:4px;top:3px;background:var(--ink);border-radius:50%;transition:.15s}
+  .sw input:checked + .sl{background:rgba(79,180,119,.35);border-color:var(--ok)}
+  .sw input:checked + .sl:before{transform:translateX(26px)}
+  .state{font-size:12px;font-weight:700;letter-spacing:.05em;margin-top:7px;text-transform:uppercase}
+  .on{color:var(--ok)} .off{color:var(--red)}
+  .msg{margin-top:6px;padding:10px 12px;border-radius:8px;font-weight:600;display:none}
+  .msg.ok{background:rgba(79,180,119,.16);color:var(--ok);display:block}
+  .msg.err{background:rgba(217,99,90,.16);color:var(--red);display:block}
+  .note{color:var(--mut);font-size:13px;margin-top:2px}
+  .note b{color:var(--ink)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Auto Reads <span class="note" id="line" style="font-weight:400"></span></h1>
+  <span class="sp"></span>
+  <a class="lnk" href="/machine-inv.html">Machine Inventory</a> &nbsp;<a class="lnk" href="/verify.html">Verify</a> &nbsp;<a class="lnk" href="/">Monitor</a>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Automatic machine reads</h2>
+    <div class="note">When a switch is <b>ON</b>, PVS reads that report on its own in the background. When <b>OFF</b>, PVS never fires it automatically — you read it on demand from the <a class="lnk" href="/machine-inv.html" style="color:var(--acc)">Machine Inventory</a> page (“⏸ Stop machine → Read”). Reads are one-way queries; they never control the machine. Changes take effect immediately and survive a restart.</div>
+
+    <div class="row">
+      <label class="sw"><input type="checkbox" id="c1z" onchange="save()"><span class="sl"></span></label>
+      <div class="txt">
+        <div class="t">Auto per-feeder read (C1Z)</div>
+        <div class="d">Background rotation that asks each machine for its per-feeder pickup counts (~one machine every 45 s). Turn OFF to keep the serial line quiet and read feeders only when you stop a machine.</div>
+        <div class="state" id="c1zState">—</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <label class="sw"><input type="checkbox" id="c1m" onchange="save()"><span class="sl"></span></label>
+      <div class="txt">
+        <div class="t">Auto board-count read (C1M)</div>
+        <div class="d">Automatic reads of each machine’s own board counter to keep PVS’s lot count anchored (recovery after a serial gap / restart). Turn OFF to read the board count only on demand.</div>
+        <div class="state" id="c1mState">—</div>
+      </div>
+    </div>
+
+    <div class="msg" id="msg"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+function setMsg(t, ok){ const m=$('msg'); m.textContent=t; m.className='msg '+(ok?'ok':'err'); }
+function paint(z, m){
+  $('c1z').checked = !!z; $('c1m').checked = !!m;
+  $('c1zState').textContent = z ? 'ON — reading automatically' : 'OFF — manual only';
+  $('c1zState').className = 'state ' + (z?'on':'off');
+  $('c1mState').textContent = m ? 'ON — reading automatically' : 'OFF — manual only';
+  $('c1mState').className = 'state ' + (m?'on':'off');
+}
+async function load(){
+  try{
+    const s = await (await fetch('/api/status')).json(); $('line').textContent = '· '+(s.line||'');
+  }catch(e){}
+  try{
+    const r = await (await fetch('/api/setup')).json();
+    paint(r.autoC1z, r.autoC1m);
+    if(r.ready===false) setMsg('Reconciler not ready yet — try again in a moment.', false);
+  }catch(e){ setMsg('Could not load setup: '+e, false); }
+}
+let busy=false;
+async function save(){
+  if(busy) return; busy=true;
+  const body = { autoC1z: $('c1z').checked, autoC1m: $('c1m').checked };
+  try{
+    const r = await (await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    paint(r.autoC1z, r.autoC1m);
+    setMsg(r.message || 'Saved.', true);
+  }catch(e){ setMsg('Save failed: '+e, false); load(); }
+  busy=false;
+}
+load();
+</script>
+</body>
+</html>

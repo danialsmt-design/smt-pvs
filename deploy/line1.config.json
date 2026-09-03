@@ -31,5 +31,24 @@
   "badge": { "uidPrefix": "9999" },
 
   "syncStockOuts": true,          // Line 1: balances trusted, writing live remaining to StockOuts.Quantity
-  "writeProductionCount": true    // Line 1: PVS is the DPC writer (operator app stopped 2026-07-31); 5-min buckets per lot/side
+  "writeProductionCount": true,   // Line 1: PVS is the DPC writer (operator app stopped 2026-07-31); 5-min buckets per lot/side
+  "c1zShadow": true,              // OBSERVE-ONLY: log C1Z pickup-consumption vs PVS per-board decrement (no stock written). Validate the F114 gap.
+  "c1zDecrement": false,          // do NOT apply the C1Z model to stock yet — turn on only after shadow confirms
+
+  // Forward-looking parts-shortage check: which upcoming lot runs a part out, emailed with lead time.
+  // FACTORY-WIDE report — enable on EXACTLY ONE line or the manager gets five identical copies. Line 1 is
+  // the natural host (it is the email gateway) but nothing in the code assumes that; the role can move.
+  // Recipients come from email.recipients and are picked by their role text (see recipientRoles).
+  "shortageMonitor": {
+    "enabled": false,             // <-- turn on for one line only
+    "dailyTime": "07:45",
+    "leadTimeDays": 2,            // a lot due within this many days makes the shortage URGENT
+    "horizonDays": 21,
+    "reelDaysBack": 30,           // reels issued longer ago than this are not counted as still at the line
+    "reelFreshHours": 72,
+    "reminderHours": 24,          // an unchanged, still-outstanding shortage repeats at most this often
+    "materialChangePercent": 5,
+    "allClearDays": 0,            // 0 = never send a "nothing is short" email
+    "recipientRoles": [ "production", "parts", "material", "planner", "manager" ]
+  }
 }

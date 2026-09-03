@@ -42,7 +42,9 @@ public readonly record struct SonyMessage(
     int? Feeder = null,          // Z field = supply position (the feeder that ran out / errored)
     int? Step = null,            // N field = NC step number
     int? ErrorCode = null,       // the nn in A1Enn / A4Enn / A5Enn
-    bool RecoveryOk = false)     // R3GD => true, R3NG => false
+    bool RecoveryOk = false,     // R3GD => true, R3NG => false
+    long? TxnId = null,          // SI-F real-time transaction ID (trailing "…TI<n>") — monotonic per machine
+    int? Head = null)            // SI-F head number (trailing "…H<n>TI…"); H1 fixed on the mounters here
 {
     // R2 error family: R2E{ee}S{sss}N{nnnn}Z{zzz}M{mmm}T{ttt}  (optionally trailing H/TI on SI-F)
     private static readonly Regex R2 = new(
@@ -51,6 +53,25 @@ public readonly record struct SonyMessage(
     private static readonly Regex R0 = new(@"^R0(?<code>CT|EP)", RegexOptions.Compiled);
     private static readonly Regex R3 = new(@"^R3(?<code>GD|NG)", RegexOptions.Compiled);
     private static readonly Regex AErr = new(@"^A(?<a>[145])E(?<ee>\d{2})", RegexOptions.Compiled);
+
+    // SI-F stamps every real-time command with a trailing transaction ID: "…[H<head>]TI<digits>" at the very
+    // end of the payload (§8.1, Table 8-2). It is a per-machine monotonic counter across ALL real-time messages
+    // (R0 board-completes, R1 status, R2 errors), so a jump in it proves PVS missed messages during a serial
+    // drop — a blind-spot detector for the live board count. Optional and best-effort: absent on older frames /
+    // non-SI-F, in which case TxnId stays null and nothing downstream changes. The marker is matched as the
+    // LITERAL "TI" (Table 8-2's "TI00000000000"), NOT "T1": the R2 error family already ends in a "T<ttt>" time
+    // field, so matching a digit-1 there would false-read the time as a txn. The digits are the right-aligned
+    // (zero-padded) integer.
+    private static readonly Regex Txn = new(@"(?:H(?<h>\d+))?TI(?<ti>\d{1,15})$", RegexOptions.Compiled);
+
+    private static (long? Txn, int? Head) ExtractTxn(string payload)
+    {
+        var t = Txn.Match(payload);
+        if (!t.Success) return (null, null);
+        long? txn = long.TryParse(t.Groups["ti"].Value, out var v) ? v : null;
+        int? head = t.Groups["h"].Success && int.TryParse(t.Groups["h"].Value, out var h) ? h : null;
+        return (txn, head);
+    }
 
     public static SonyMessage Parse(string payload)
     {
@@ -73,21 +94,31 @@ public readonly record struct SonyMessage(
             };
             // For an error-stop (E08) the Z field is 000 = no specific feeder.
             int? feederOrNull = kind == MessageKind.ErrorStop && feeder == 0 ? null : feeder;
-            return new SonyMessage(payload, kind, StatusCode: $"E{ee:D2}", Feeder: feederOrNull, Step: step);
+            var (rtx, rhd) = ExtractTxn(payload);
+            return new SonyMessage(payload, kind, StatusCode: $"E{ee:D2}", Feeder: feederOrNull, Step: step, TxnId: rtx, Head: rhd);
         }
 
         m = R0.Match(payload);
         if (m.Success)
-            return new SonyMessage(payload, MessageKind.BoardComplete, StatusCode: m.Groups["code"].Value);
+        {
+            var (tx, hd) = ExtractTxn(payload);
+            return new SonyMessage(payload, MessageKind.BoardComplete, StatusCode: m.Groups["code"].Value, TxnId: tx, Head: hd);
+        }
 
         m = R3.Match(payload);
         if (m.Success)
+        {
+            var (tx, hd) = ExtractTxn(payload);
             return new SonyMessage(payload, MessageKind.Recovery, StatusCode: m.Groups["code"].Value,
-                RecoveryOk: m.Groups["code"].Value == "GD");
+                RecoveryOk: m.Groups["code"].Value == "GD", TxnId: tx, Head: hd);
+        }
 
         m = R1.Match(payload);
         if (m.Success)
-            return new SonyMessage(payload, MessageKind.Status, StatusCode: m.Groups["code"].Value);
+        {
+            var (tx, hd) = ExtractTxn(payload);
+            return new SonyMessage(payload, MessageKind.Status, StatusCode: m.Groups["code"].Value, TxnId: tx, Head: hd);
+        }
 
         m = AErr.Match(payload);
         if (m.Success)

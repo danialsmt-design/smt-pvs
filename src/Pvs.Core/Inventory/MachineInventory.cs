@@ -14,6 +14,11 @@ public sealed class FeederState
     public int Remaining { get; internal set; }
     /// <summary>True once a reel with a known quantity is loaded, so it decrements per board.</summary>
     public bool IsTracked { get; internal set; }
+    /// <summary>Starting quantity of the currently-loaded reel (for the exhaust-accuracy signal).</summary>
+    public int StartQty { get; internal set; }
+    /// <summary>The machine's board tally when the current reel was loaded — so boards-run-this-reel =
+    /// BoardsApplied − LoadBoards, the denominator for measuring predicted-vs-actual exhaust.</summary>
+    public int LoadBoards { get; internal set; }
 }
 
 /// <summary>
@@ -31,10 +36,24 @@ public sealed class MachineInventory
 {
     private readonly Dictionary<int, FeederState> _feeders = new();
     private readonly object _lock = new();   // board-complete (serial thread) vs configure/read (coordinator/API thread)
+    private int _boardsApplied;              // boards this machine's feeders have been decremented for (per R0)
 
     public MachineInventory(int machine) => Machine = machine;
 
     public int Machine { get; }
+
+    /// <summary>How many completed boards this machine's feeders have been drawn down for since the last
+    /// model-change/clear. This is PVS's OWN per-machine tally (one per R0), so it drifts below the machine's
+    /// true output whenever PVS missed board-completes — which is exactly what <see cref="SyncToBoardCount"/>
+    /// corrects against the machine's HMI panel count.</summary>
+    public int BoardsApplied { get { lock (_lock) return _boardsApplied; } }
+
+    /// <summary>Set the boards-applied tally WITHOUT touching any feeder — used to re-anchor the per-machine
+    /// count to the lot's board count after a restart / re-baseline. The feeders' remaining is restored from the
+    /// DB (it already reflects those boards), so the tally must be seeded to match; otherwise a later HMI sync
+    /// would subtract the same boards a SECOND time (double-decrement). Distinct from <see cref="SyncToBoardCount"/>,
+    /// which DOES adjust feeders.</summary>
+    public void SeedBoardsApplied(int boards) { lock (_lock) _boardsApplied = Math.Max(0, boards); }
 
     /// <summary>Snapshot of the feeders (copied under the lock, so callers can enumerate freely).</summary>
     public IReadOnlyCollection<FeederState> Feeders { get { lock (_lock) return _feeders.Values.ToList(); } }
@@ -42,7 +61,7 @@ public sealed class MachineInventory
     public FeederState? Get(int feeder) { lock (_lock) return _feeders.TryGetValue(feeder, out var f) ? f : null; }
 
     /// <summary>Clears every feeder (used to re-baseline the whole machine on a model change).</summary>
-    public void Clear() { lock (_lock) _feeders.Clear(); }
+    public void Clear() { lock (_lock) { _feeders.Clear(); _boardsApplied = 0; } }
 
     /// <summary>Defines a feeder's part + placements-per-board (from the model's feeder list). No reel yet.</summary>
     public FeederState Configure(int feeder, string partNumber, int mountedPerBoard)
@@ -65,7 +84,21 @@ public sealed class MachineInventory
             var f = Require(feeder);
             f.ReelUid = reelUid;
             f.Remaining = Math.Max(0, startingQty);
+            f.StartQty = Math.Max(0, startingQty);
+            f.LoadBoards = _boardsApplied;   // anchor for boards-run-this-reel (exhaust-accuracy signal)
             f.IsTracked = true;
+        }
+    }
+
+    /// <summary>The exhaust-accuracy sample for a feeder right now: how many boards this reel has run, the pieces
+    /// PVS still THINKS remain (the error at a genuine parts-out — ideally ~0), its start qty and per-board rate.
+    /// Read at a parts-out to learn whether the reel emptied earlier/later than predicted. Null if not tracked.</summary>
+    public (int BoardsThisReel, int Remaining, int StartQty, int MountedPerBoard, string Part, string? ReelUid)? ReelUsage(int feeder)
+    {
+        lock (_lock)
+        {
+            if (!_feeders.TryGetValue(feeder, out var f) || !f.IsTracked) return null;
+            return (Math.Max(0, _boardsApplied - f.LoadBoards), f.Remaining, f.StartQty, f.MountedPerBoard, f.PartNumber, f.ReelUid);
         }
     }
 
@@ -93,11 +126,38 @@ public sealed class MachineInventory
     public void OnBoardComplete()
     {
         lock (_lock)
+        {
+            _boardsApplied++;
             foreach (var f in _feeders.Values)
             {
                 if (!f.IsTracked) continue;
                 f.Remaining = Math.Max(0, f.Remaining - f.MountedPerBoard);
             }
+        }
+    }
+
+    /// <summary>
+    /// Correct every tracked feeder to a KNOWN board count (the operator's manual HMI reading, in the same board
+    /// unit the feeders decrement in — one per completed PWB). PVS can't read the machine counter over serial
+    /// during production (Appendix F: C1M/C1Z reply A4E00 while AUTO-producing), so the operator keeps the count
+    /// honest by hand; this applies the difference as a one-off draw-down. delta = trueBoards - boardsApplied:
+    /// a POSITIVE delta (PVS missed boards) draws the feeders down; a NEGATIVE delta (PVS double-counted) hands
+    /// pieces back. Clamped at zero. Returns the applied delta (boards).
+    /// </summary>
+    public int SyncToBoardCount(int trueBoards)
+    {
+        lock (_lock)
+        {
+            trueBoards = Math.Max(0, trueBoards);
+            int delta = trueBoards - _boardsApplied;
+            foreach (var f in _feeders.Values)
+            {
+                if (!f.IsTracked) continue;
+                f.Remaining = Math.Max(0, f.Remaining - f.MountedPerBoard * delta);
+            }
+            _boardsApplied = trueBoards;
+            return delta;
+        }
     }
 
     // Callers hold _lock.

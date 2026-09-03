@@ -38,7 +38,8 @@
 
   "badge": { "uidPrefix": "9999" },
 
-  // Pilot: both OFF. Turn on only after the Line-4 operator-app / DPC handover (as done on Line 1).
+  // writeProductionCount ON — PVS is the DPC writer for this line (external logger 192.168.0.190 died 2026-08-14).
+  // Do NOT let a redeploy revert it to false: that silently stops production recording.
   "syncStockOuts": false,
-  "writeProductionCount": false
+  "writeProductionCount": true
 }

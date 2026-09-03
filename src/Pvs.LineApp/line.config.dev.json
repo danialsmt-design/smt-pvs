@@ -1,0 +1,15 @@
+{
+  "lineId": 1,
+  "lineName": "DEV (this PC) — no DB, no serial",
+  "shiftTimes": [
+    { "name": "Morning", "start": "07:30", "end": "19:30" },
+    { "name": "Night", "start": "19:30", "end": "07:30" }
+  ],
+  "machines": [
+    { "machine": 1, "port": "COM90", "model": "F130" },
+    { "machine": 2, "port": "COM91", "model": "F130" },
+    { "machine": 3, "port": "COM92", "model": "F209" },
+    { "machine": 4, "port": "COM93", "model": "F209" }
+  ],
+  "panelBoards": { "L307": 4, "L309": 4 }
+}

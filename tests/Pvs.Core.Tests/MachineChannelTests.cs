@@ -206,12 +206,16 @@ public class MachineChannelTests
     [Fact]
     public void RequestSupplyReport_sends_C1Z000_bare_and_with_pwb_name()
     {
-        var (ch, sent) = Make();
-        ch.RequestSupplyReport(T0);
-        Assert.Contains(sent, s => s.Contains("C1Z000") && !s.Contains("C1Z000P"));
-        sent.Clear();
-        ch.RequestSupplyReport(T0, "L307 - B SIDE _Cell4");
-        Assert.Contains(sent, s => s.Contains("C1Z000PL307 - B SIDE _Cell4"));
+        // Separate channels: with the "one report at a time" pipeline guard, a second RequestSupplyReport on the
+        // SAME channel while the first is still collecting is intentionally a no-op — so test each command FORMAT
+        // on its own fresh channel.
+        var (ch1, sent1) = Make();
+        ch1.RequestSupplyReport(T0);
+        Assert.Contains(sent1, s => s.Contains("C1Z000") && !s.Contains("C1Z000P"));
+
+        var (ch2, sent2) = Make();
+        ch2.RequestSupplyReport(T0, "L307 - B SIDE _Cell4");
+        Assert.Contains(sent2, s => s.Contains("C1Z000PL307 - B SIDE _Cell4"));
     }
 
     [Fact]
@@ -244,5 +248,99 @@ public class MachineChannelTests
         ch.Feed(Frame("R0CT"), T0.AddSeconds(9));      // >8s later: collection has timed out
         Assert.Contains(sent, s => s.Contains("A2"));  // back to normal A2 acking
         Assert.Equal(300, ch.CompletedPwbs);           // salvaged the count that had arrived
+    }
+
+    // ---- transaction-ID gap detection (serial blind-spot) ----
+
+    [Fact]
+    public void A_jump_in_the_transaction_id_flags_missed_messages()
+    {
+        var (ch, _) = Make();
+        int gapMissed = 0;
+        ch.CountGapSuspected += n => gapMissed = n;
+
+        ch.Feed(Frame("R0CTH1TI00000000010"), T0);               // baseline
+        ch.Feed(Frame("R0CTH1TI00000000013"), T0.AddSeconds(60)); // 11 and 12 never arrived
+
+        Assert.Equal(2, gapMissed);
+        Assert.Equal(2, ch.SuspectedMissedMessages);
+        Assert.Equal(13L, ch.LastTxnId);
+    }
+
+    [Fact]
+    public void Contiguous_transaction_ids_raise_no_gap()
+    {
+        var (ch, _) = Make();
+        bool raised = false;
+        ch.CountGapSuspected += _ => raised = true;
+
+        ch.Feed(Frame("R0CTH1TI00000000010"), T0);
+        ch.Feed(Frame("R0CTH1TI00000000011"), T0.AddSeconds(60));
+
+        Assert.False(raised);
+        Assert.Equal(0, ch.SuspectedMissedMessages);
+    }
+
+    [Fact]
+    public void A_lower_transaction_id_rebaselines_and_is_not_a_gap()
+    {
+        var (ch, _) = Make();
+        bool raised = false;
+        ch.CountGapSuspected += _ => raised = true;
+
+        ch.Feed(Frame("R0CTH1TI00000000100"), T0);
+        ch.Feed(Frame("R0CTH1TI00000000005"), T0.AddSeconds(60)); // machine power-cycled its numbering
+
+        Assert.False(raised);                         // a backwards step is a reset, not missed boards
+        Assert.Equal(0, ch.SuspectedMissedMessages);
+        Assert.Equal(5L, ch.LastTxnId);               // re-baselined to the new sequence
+    }
+
+    [Fact]
+    public void Gap_detection_is_inert_when_the_machine_sends_no_transaction_id()
+    {
+        var (ch, _) = Make();
+        bool raised = false;
+        ch.CountGapSuspected += _ => raised = true;
+
+        ch.Feed(Frame("R0CT"), T0);                   // no TI at all
+        ch.Feed(Frame("R0CT"), T0.AddSeconds(60));
+
+        Assert.False(raised);
+        Assert.Equal(0, ch.SuspectedMissedMessages);
+        Assert.Null(ch.LastTxnId);
+    }
+
+    // ---- serial pipeline: reports own the line; housekeeping is held off ----
+
+    [Fact]
+    public void Report_read_holds_off_C3P_housekeeping()
+    {
+        var (ch, sent) = Make();
+        ch.RequestSupplyReport(DateTime.Now, "PROG", timeoutSec: 30);   // report in flight → owns the line
+        sent.Clear();
+        ch.RequestProgram();                                            // low-priority housekeeping — suppressed
+        Assert.Empty(sent);
+        Assert.True(ch.IsCollectingReport);
+    }
+
+    [Fact]
+    public void Second_report_does_not_stomp_one_in_flight()
+    {
+        var (ch, sent) = Make();
+        ch.RequestProductionCount(DateTime.Now, "P", timeoutSec: 8);    // C1M goes out
+        Assert.Single(sent);
+        sent.Clear();
+        ch.RequestSupplyReport(DateTime.Now, "P", timeoutSec: 60);      // must no-op — one report at a time
+        Assert.Empty(sent);
+    }
+
+    [Fact]
+    public void SuppressHousekeeping_holds_off_C3P_for_the_window()
+    {
+        var (ch, sent) = Make();
+        ch.SuppressHousekeeping(TimeSpan.FromSeconds(30));
+        ch.RequestProgram();
+        Assert.Empty(sent);   // within the suppression window, no C3P on the wire
     }
 }

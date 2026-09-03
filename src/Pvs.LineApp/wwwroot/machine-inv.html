@@ -33,6 +33,14 @@
   .msg.ok{background:rgba(79,180,119,.16);color:var(--ok);display:block}
   .msg.err{background:rgba(217,99,90,.16);color:var(--red);display:block}
   .empty{color:var(--mut);padding:12px 10px}
+  #serialLog{margin-top:10px;height:280px;overflow-y:auto;background:#0B100D;border:1px solid var(--ln);border-radius:8px;
+             padding:8px 10px;font:12.5px/1.55 Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  .se{display:flex;gap:8px}
+  .se .tm{color:#5C7268;flex:0 0 auto}
+  .se .dr{flex:0 0 34px;font-weight:700}
+  .se.tx .dr{color:var(--acc)} .se.rx .dr{color:#5CA9E8}
+  .se.err .tx-txt,.se.err .dr{color:var(--red)}
+  .se .tx-txt{color:var(--ink)}
 </style>
 </head>
 <body>
@@ -40,7 +48,7 @@
   <h1>Machine Feeder Inventory</h1>
   <span class="muted" id="model">—</span>
   <span class="sp"></span>
-  <a class="lnk" href="/verify.html">Verify</a> &nbsp;<a class="lnk" href="/">Monitor</a>
+  <a class="lnk" href="/reads.html">Auto reads</a> &nbsp;<a class="lnk" href="/verify.html">Verify</a> &nbsp;<a class="lnk" href="/">Monitor</a>
 </header>
 
 <main>
@@ -50,14 +58,35 @@
       <label>Supervisor badge (to adjust)</label><br>
       <input id="badge" placeholder="scan a supervisor badge" autocomplete="off" style="width:280px">
       <button class="sec" onclick="load()">↻ Refresh</button>
+      <button class="sec" id="readbtn" onclick="readNow()" title="STOP the machine at its HMI first, then read board count (C1M) + per-feeder (C1Z), one command at a time through the serial pipeline">⏸ Stop machine → Read (C1M + C1Z)</button>
     </div>
+    <div class="muted" id="cap" style="margin-top:8px"></div>
     <div class="msg" id="msg"></div>
   </div>
 
   <div class="card">
-    <table><thead><tr><th>Feeder</th><th>Part</th><th>Reel UID</th><th>Qty available</th><th></th></tr></thead>
+    <div style="overflow-x:auto">
+    <table><thead><tr>
+      <th>Feeder</th><th>Part</th><th>Reel UID</th><th>Qty</th>
+      <th title="Attempted pickups">Attempt</th><th title="Successful pickups">Success</th>
+      <th title="Missed pickup errors">Miss</th><th title="Abnormal pickup errors">Abn</th>
+      <th title="Recognition errors">Recog</th><th title="Parts-out stops">P-Out</th>
+      <th title="Successful pickup rate">Rate</th><th></th>
+    </tr></thead>
       <tbody id="rows"></tbody></table>
+    </div>
     <div class="empty" id="empty">Select a machine.</div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px">
+      <strong style="font-size:14px">Serial log — live</strong>
+      <span class="muted" id="serialMeta" style="font-size:12px">TX = PVS → machine · RX = machine → PVS</span>
+      <span class="sp" style="margin-left:auto"></span>
+      <label class="muted" style="font-size:12px;text-transform:none;letter-spacing:0"><input type="checkbox" id="serialAuto" checked style="vertical-align:middle"> auto-scroll</label>
+      <button class="sec" onclick="clearSerial()">Clear</button>
+    </div>
+    <div id="serialLog"></div>
   </div>
 </main>
 
@@ -72,27 +101,105 @@ function tabs(){
     mt.insertAdjacentHTML('beforeend', `<button class="mtab ${m===machine?'active':''}" onclick="pick(${m})">Machine ${m}</button>`);
   });
 }
-function pick(m){ machine=m; tabs(); load(); }
+function pick(m){ machine=m; tabs(); clearSerial(); load(); }
+
+// ---- live serial trace ----
+let serialSeq = 0;
+function clearSerial(){ serialSeq=0; const el=$('serialLog'); if(el) el.innerHTML=''; }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+async function pollSerial(){
+  if(machine){
+    try{
+      const r = await (await fetch('/api/serial/trace?machine='+machine+'&after='+serialSeq)).json();
+      if(r.entries && r.entries.length){
+        const box=$('serialLog'); const frag=document.createDocumentFragment();
+        r.entries.forEach(e=>{
+          serialSeq = Math.max(serialSeq, e.seq);
+          const isErr = /^A[345]/.test(e.text);
+          const row=document.createElement('div');
+          row.className='se '+(e.dir==='TX'?'tx':'rx')+(isErr?' err':'');
+          row.innerHTML=`<span class="tm">${e.t}</span><span class="dr">${e.dir}</span><span class="tx-txt">${esc(e.text)}</span>`;
+          frag.appendChild(row);
+        });
+        box.appendChild(frag);
+        while(box.childElementCount>400) box.removeChild(box.firstChild);
+        if($('serialAuto').checked) box.scrollTop=box.scrollHeight;
+      }
+    }catch(e){}
+  }
+  setTimeout(pollSerial, 1000);
+}
+
+function ago(iso){ if(!iso) return null; const s=(Date.now()-new Date(iso))/1000;
+  if(s<90) return Math.round(s)+'s ago'; if(s<5400) return Math.round(s/60)+'m ago'; return Math.round(s/3600)+'h ago'; }
 
 async function load(){
   if(!machine) return;
   $('msg').className='msg';
-  const r = await (await fetch('/api/inventory?machine='+machine)).json();
+  // Inventory (qty/reel) + the machine's own per-feeder stats (C1Z), merged by feeder number.
+  const [r, sres] = await Promise.all([
+    fetch('/api/inventory?machine='+machine).then(x=>x.json()),
+    fetch('/api/feederstats?machine='+machine).then(x=>x.json()).catch(()=>null)
+  ]);
   $('model').textContent = r.model ? (r.model + ' · ' + r.side + ' side') : 'no model selected on the line';
+  const sm = (sres && sres.machines && sres.machines[0]) || null;
+  const stats = {}; if(sm) (sm.feeders||[]).forEach(f=> stats[f.feeder]=f);
+  // capture freshness line
+  if(sm && sm.capturedAt){
+    const win = (sm.windowStart&&sm.windowEnd)? ` · window ${sm.windowStart.slice(5,16).replace('T',' ')}→${sm.windowEnd.slice(11,16)}`:'';
+    $('cap').textContent = `machine report captured ${ago(sm.capturedAt)}${win}` + (sm.error? ` · last read refused (${sm.error})`:'');
+  } else { $('cap').textContent = sm && sm.error ? `no machine report yet — last read refused (${sm.error}). Try “Read machine now”.` : 'no machine report captured yet — try “Read machine now”.'; }
+
   const tb=$('rows'); tb.innerHTML='';
-  if(!r.feeders || !r.feeders.length){ $('empty').style.display='block'; $('empty').textContent = r.model? 'No feeders for this machine.' : 'Select the running model on the Verify screen first.'; return; }
+  // Union of inventory feeders (part/qty, Canon only) and the machine's C1Z feeders (pickup data, by position).
+  // On a non-Canon run inventory is empty but the pickup data still shows — that's the whole point of this mode.
+  const inv = {}; (r.feeders||[]).forEach(f=> inv[f.feeder]=f);
+  const feeders = Array.from(new Set([...Object.keys(inv), ...Object.keys(stats)].map(Number))).sort((a,b)=>a-b);
+  if(!feeders.length){ $('empty').style.display='block'; $('empty').textContent = r.model? 'No feeders for this machine.' : 'No model tracked and no machine data yet — try “Read machine now”.'; return; }
   $('empty').style.display='none';
-  r.feeders.forEach(f=>{
-    const uid = f.uid || '—';
-    const qty = (f.qty==null)?'':f.qty;
-    const canEdit = !!f.uid;
+  feeders.forEach(fn=>{
+    const f = inv[fn]; const s = stats[fn];
+    const part = f ? f.part : (s && s.part) ? s.part : '<span class="muted">— (pos)</span>';
+    const uid = f && f.uid ? f.uid : '—';
+    const qty = (f && f.qty!=null)?f.qty:'';
+    const canEdit = !!(f && f.uid);
+    const err = s ? (s.missed+s.abnormal+s.recognition) : 0;
+    const errCol = err>0 ? 'color:var(--red);font-weight:600' : 'color:var(--mut)';
+    const cell = (v)=> s ? v : '<span class="muted">·</span>';
     tb.insertAdjacentHTML('beforeend',
       `<tr>
-        <td>${f.feeder}</td><td>${f.part}</td><td>${uid}</td>
-        <td>${canEdit? `<input id="q_${f.feeder}" type="number" min="0" value="${qty}">` : '<span class="muted">not scanned</span>'}</td>
-        <td>${canEdit? `<button onclick="save(${f.feeder})">Save</button>`:''}</td>
+        <td>${fn}</td><td>${part}</td><td>${uid}</td>
+        <td>${canEdit? `<input id="q_${fn}" type="number" min="0" value="${qty}">` : '<span class="muted">—</span>'}</td>
+        <td>${cell(s&&s.attempted)}</td><td>${cell(s&&s.successful)}</td>
+        <td style="${s&&s.missed>0?errCol:''}">${cell(s&&s.missed)}</td>
+        <td style="${s&&s.abnormal>0?errCol:''}">${cell(s&&s.abnormal)}</td>
+        <td style="${s&&s.recognition>0?errCol:''}">${cell(s&&s.recognition)}</td>
+        <td>${cell(s&&s.partsOut)}</td>
+        <td>${s? (s.ratePct.toFixed(2)+'%') : '<span class="muted">·</span>'}</td>
+        <td>${canEdit? `<button onclick="save(${fn})">Save</button>`:''}</td>
       </tr>`);
   });
+}
+
+async function readNow(){
+  if(!machine) return;
+  if(!confirm('STOP machine '+machine+' at its HMI first (Normal Stop).\n\nThen PVS will read:\n  1) C1M — board count\n  2) C1Z — per-feeder pickups\n\nsent one at a time through the serial pipeline. Continue?')) return;
+  const b=$('readbtn'); b.disabled=true; const t=b.textContent; b.textContent='Reading C1M + C1Z… (~1 min)';
+  setMsg('Reading machine '+machine+': C1M (board count), then C1Z (feeders)…', true);
+  try{
+    const r = await (await fetch('/api/machine/readnow?machine='+machine,{method:'POST'})).json();
+    if(r.error){ setMsg('Machine '+machine+': '+r.error, false); }
+    else {
+      const parts=[];
+      if(r.c1m && r.c1m.got) parts.push('C1M board count = '+r.c1m.boards);
+      else parts.push('C1M refused'+(r.c1m&&r.c1m.error?(' ('+r.c1m.error+')'):' (no reply)'));
+      if(r.c1z && r.c1z.got) parts.push('C1Z '+r.c1z.feeders+' feeders');
+      else parts.push('C1Z refused'+(r.c1z&&r.c1z.error?(' ('+r.c1z.error+')'):' (no reply)'));
+      const both = r.c1m&&r.c1m.got && r.c1z&&r.c1z.got;
+      setMsg('Machine '+machine+' — '+parts.join(' · ')+(both?'':'  (is the machine stopped?)'), both);
+    }
+  }catch(e){ setMsg('Read failed: '+e, false); }
+  b.disabled=false; b.textContent=t; load();
 }
 
 async function save(feeder){
@@ -106,6 +213,7 @@ async function save(feeder){
   if(r.ok) load();
 }
 tabs();
+pollSerial();
 </script>
 </body>
 </html>

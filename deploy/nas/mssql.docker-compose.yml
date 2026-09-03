@@ -1,0 +1,32 @@
+# SQL Server 2022 on the Synology DS225+ (Container Manager).
+# Hosts ReelPart-New, replacing the shop-floor Acer PC.
+#
+# Deploy (via SSH on the NAS, once RAM=6GB + drives + DSM are up):
+#   mkdir -p /volume1/docker/reelpart-sql/{data,log,backup}
+#   # put SA_PASSWORD in a .env next to this file (NOT committed):  echo 'SA_PASSWORD=<strong-pw>' > .env
+#   sudo docker compose -f mssql.docker-compose.yml up -d
+#
+# Notes:
+#  - Express edition = FREE, but limits: 10 GB per database, ~1.4 GB RAM per instance, no SQL Agent.
+#    ReelPart-New is small, so Express is expected to fit — CONFIRM db size at migration (see README-migrate.md).
+#    If it's >10 GB or needs SQL Agent, switch MSSQL_PID to a licensed edition.
+#  - No SQL Agent on Express -> schedule backups from DSM Task Scheduler (cron) instead (see runbook).
+#  - mem_limit keeps SQL from starving DSM on the 6 GB box.
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: reelpart-sql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${SA_PASSWORD}"   # from .env, never hard-coded here
+      MSSQL_PID: "Express"
+      TZ: "Asia/Kuala_Lumpur"
+    ports:
+      - "1433:1433"
+    volumes:
+      - /volume1/docker/reelpart-sql/data:/var/opt/mssql/data
+      - /volume1/docker/reelpart-sql/log:/var/opt/mssql/log
+      - /volume1/docker/reelpart-sql/backup:/var/opt/mssql/backup
+    mem_limit: 3500m
+    cpus: 2.0

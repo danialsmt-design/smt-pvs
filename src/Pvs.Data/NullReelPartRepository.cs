@@ -9,6 +9,8 @@ namespace Pvs.Data;
 /// </summary>
 public sealed class NullReelPartRepository : IReelPartRepository
 {
+    public Task<bool> PingAsync(CancellationToken ct = default) => Task.FromResult(false);
+
     public Task<IReadOnlyList<Product>> GetProductsAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<Product>>(Array.Empty<Product>());
 
@@ -17,6 +19,8 @@ public sealed class NullReelPartRepository : IReelPartRepository
 
     public Task<Badge?> FindBadgeAsync(string badgeUid, CancellationToken ct = default) =>
         Task.FromResult<Badge?>(null);
+
+    public Task<int> PreloadBadgesAsync(CancellationToken ct = default) => Task.FromResult(0);
 
     public Task<ReelInfo?> FindReelAsync(string partUid, string partNumber, CancellationToken ct = default) =>
         Task.FromResult<ReelInfo?>(null);
@@ -33,16 +37,25 @@ public sealed class NullReelPartRepository : IReelPartRepository
     public Task<int?> GetLotTargetAsync(string lotNo, CancellationToken ct = default) =>
         Task.FromResult<int?>(null);
 
+    public Task<LotSizeRow?> GetLotSizeAsync(string lotNo, CancellationToken ct = default) =>
+        Task.FromResult<LotSizeRow?>(null);
+
+    public Task<LotBoardTally> GetLotBoardTallyAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
+        Task.FromResult(new LotBoardTally(0, 0, 0, null, null));
+
     public Task<IReadOnlyDictionary<string, int>> GetIssuedForLotAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyDictionary<string, int>>(new Dictionary<string, int>());
 
     public Task<IReadOnlyList<IssuedReel>> GetIssuedReelsForLotAsync(string lotNo, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<IssuedReel>>(Array.Empty<IssuedReel>());
 
+    public Task<IReadOnlyList<IssuedReel>> GetReelsAtLineAsync(int line, int daysBack, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<IssuedReel>>(Array.Empty<IssuedReel>());
+
     public Task<LotOrder?> GetNextDeliveryLotAsync(string model, string side, int line, CancellationToken ct = default) =>
         Task.FromResult<LotOrder?>(null);
 
-    public Task<IReadOnlyList<LotOrder>> GetLotOptionsAsync(string model, CancellationToken ct = default) =>
+    public Task<IReadOnlyList<LotOrder>> GetLotOptionsAsync(string model, IReadOnlyList<string>? reopenLots = null, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<LotOrder>>(Array.Empty<LotOrder>());
 
     public Task<int> InsertProductionCountAsync(ProductionCountEntry row, CancellationToken ct = default) =>
@@ -59,4 +72,22 @@ public sealed class NullReelPartRepository : IReelPartRepository
 
     public Task<int> UpdateReelQtyAsync(string partUid, string partNumber, int quantity, CancellationToken ct = default) =>
         Task.FromResult(0);
+
+    public Task<IReadOnlyList<Pvs.Core.Inventory.UpcomingLot>> GetUpcomingLotsAsync(int horizonDays, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Pvs.Core.Inventory.UpcomingLot>>(Array.Empty<Pvs.Core.Inventory.UpcomingLot>());
+
+    public Task<IReadOnlyList<Pvs.Core.Inventory.BomUsageRow>> GetBomUsageForModelsAsync(IReadOnlyCollection<string> models, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Pvs.Core.Inventory.BomUsageRow>>(Array.Empty<Pvs.Core.Inventory.BomUsageRow>());
+
+    public Task<IReadOnlyList<Pvs.Core.Inventory.PartStock>> GetPartStockAsync(IReadOnlyCollection<string> parts, int reelDaysBack, int freshHours, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Pvs.Core.Inventory.PartStock>>(Array.Empty<Pvs.Core.Inventory.PartStock>());
+
+    public Task<IReadOnlyList<LineReelTracking>> GetReelTrackingByLineAsync(int reelDaysBack, int freshHours, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<LineReelTracking>>(Array.Empty<LineReelTracking>());
+
+    public Task<string?> GetPartRankAsync(string partNumber, CancellationToken ct = default) => Task.FromResult<string?>(null);
+    public Task<int> RecordConsumedReelAsync(ConsumedReel reel, CancellationToken ct = default) => Task.FromResult(0);
+    public Task<ConsumedReel?> GetActiveConsumedReelAsync(string uid, CancellationToken ct = default) => Task.FromResult<ConsumedReel?>(null);
+    public Task<int> MarkConsumedRestoredAsync(string uid, CancellationToken ct = default) => Task.FromResult(0);
+    public Task<int> AddPartAttritionAsync(string partNumber, int pcsDelta, int reelDelta, CancellationToken ct = default) => Task.FromResult(0);
 }

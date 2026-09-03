@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Daily Production Report</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--red:#D9635A}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  a.lnk{color:var(--mut);text-decoration:none;font-size:14px}
+  header .sp{margin-left:auto}
+  main{padding:18px 22px;max-width:1080px;display:grid;gap:16px;margin:0 auto}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:16px 18px}
+  .card h2{font-size:15px;margin:0 0 12px;font-weight:600;color:var(--ink)}
+  .card h2 small{color:var(--mut);font-weight:400;font-size:13px;margin-left:8px}
+  label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);font-weight:600}
+  input{background:var(--pan2);border:1px solid var(--ln);color:var(--ink);border-radius:8px;padding:9px 11px;font:15px Consolas,monospace}
+  button{background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:8px;padding:8px 14px;cursor:pointer;font:14px inherit;font-weight:600}
+  button.sec{background:var(--pan2);border-color:var(--ln);color:var(--ink);font-weight:500}
+  table{width:100%;border-collapse:collapse;font-size:14px;font-family:Consolas,monospace}
+  th{text-align:left;color:var(--mut);font-size:12px;padding:8px 10px;border-bottom:1px solid var(--ln)}
+  td{padding:7px 10px;border-bottom:1px solid #131A16}
+  td.n,th.n{text-align:right}
+  .muted{color:var(--mut);font-size:13px}
+  .empty{color:var(--mut);padding:12px 10px}
+  .kpis{display:flex;gap:14px;flex-wrap:wrap}
+  .kpi{background:var(--pan2);border:1px solid var(--ln);border-radius:10px;padding:12px 18px;min-width:150px}
+  .kpi .v{font-size:26px;font-weight:700}
+  .kpi .l{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+  .kpi.warn .v{color:var(--acc)} .kpi.bad .v{color:var(--red)} .kpi.good .v{color:var(--ok)}
+  .mtab{display:inline-block;background:var(--pan2);border:1px solid var(--ln);color:var(--mut);border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:600;font-size:14px;margin:0 6px 6px 0}
+  .mtab.active{border-color:var(--acc);color:var(--ink)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:6px;font-size:12px;background:var(--pan2);border:1px solid var(--ln);color:var(--mut)}
+  .pill.up{color:var(--ok);border-color:var(--ok)} .pill.down{color:var(--red);border-color:var(--red)}
+  @media print{
+    body{background:#fff;color:#000}
+    header .sp,header a,header button,header input,header label{display:none}
+    .card,.kpi,.mtab{border-color:#bbb;background:#fff;color:#000}
+    .muted,.kpi .l,th{color:#333}
+    .mtab{display:none} .mtab.printall{display:none}
+    #machineSections .msec{display:block!important;page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Daily Production Report</h1>
+  <span class="muted" id="sub">—</span>
+  <span class="sp"></span>
+  <label for="date">Date</label>
+  <input type="date" id="date">
+  <button class="sec" onclick="load()">Show</button>
+  <button onclick="window.print()">Print</button>
+  <a class="lnk" href="/">Monitor</a> &nbsp;<a class="lnk" href="/verify.html">Verify</a>
+</header>
+<main>
+  <div class="card">
+    <div class="kpis" id="kpis"></div>
+  </div>
+
+  <div class="card">
+    <h2>Model runs <small id="runsHint"></small></h2>
+    <table id="runs"><thead><tr>
+      <th>Model</th><th>Side</th><th>Lot no.</th><th>Shift</th><th>Start</th><th>End</th>
+      <th class="n">Qty</th><th class="n">Excess</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>Line downtime <small id="dtHint"></small></h2>
+    <table id="downtime"><thead><tr>
+      <th>Stopped</th><th>Resumed</th><th class="n">Minutes</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>Feeder usage by machine <small>expected placements = boards produced × per-board (BOM)</small></h2>
+    <div id="mtabs"></div>
+    <div id="machineSections"></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmtDT = iso => { if(!iso) return '—'; const t=new Date(iso); return t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); };
+const num = n => (n==null?'—':Number(n).toLocaleString());
+
+let activeMachine = null;
+
+async function load(){
+  const date = $('#date').value;
+  const url = '/api/report/daily' + (date ? ('?date='+encodeURIComponent(date)) : '');
+  let r;
+  try { r = await (await fetch(url)).json(); }
+  catch(e){ $('#sub').textContent = 'Failed to load report.'; return; }
+
+  $('#sub').textContent = r.line + ' · line ' + r.lineId + ' · ' + r.date +
+    (r.currentShift ? ' · ' + r.currentShift + ' shift' : '') +
+    ' · generated ' + fmtDT(r.generatedAt);
+  if(!$('#date').value) $('#date').value = r.date;
+
+  // KPIs
+  const up = r.downtime?.up;
+  $('#kpis').innerHTML =
+    kpi('good', num(r.totalBoards), 'Boards produced') +
+    kpi('', num(r.totalExcess), 'Excess') +
+    kpi('', (r.models?.length||0), 'Model/side runs') +
+    kpi(r.downtime.totalMinutes>0?'bad':'good', r.downtime.totalMinutes + 'm', 'Line downtime') +
+    kpi(up?'good':'warn', up?'UP':'DOWN', 'Line now');
+
+  // Runs
+  const rb = $('#runs tbody'); rb.innerHTML='';
+  if(!r.runs.length) rb.innerHTML = `<tr><td colspan="8" class="empty">No production logged for this date.</td></tr>`;
+  for(const x of r.runs){
+    rb.insertAdjacentHTML('beforeend',
+      `<tr><td>${x.model||'—'}</td><td>${x.side||'—'}</td><td>${x.lotNo||'—'}</td><td>${x.shift||'—'}</td>
+       <td>${x.startTime||'—'}</td><td>${x.endTime||'—'}</td>
+       <td class="n">${num(x.quantity)}</td><td class="n">${num(x.excess)}</td></tr>`);
+  }
+  $('#runsHint').textContent = r.runs.length ? (r.runs.length + ' runs · ' + num(r.totalBoards) + ' boards') : '';
+
+  // Downtime
+  const db = $('#downtime tbody'); db.innerHTML='';
+  const spans = r.downtime?.spans || [];
+  if(!spans.length) db.innerHTML = `<tr><td colspan="3" class="empty">No line stops recorded${up===false?' (line has not run yet today)':''}.</td></tr>`;
+  for(const s of spans){
+    db.insertAdjacentHTML('beforeend',
+      `<tr><td>${fmtDT(s.start)}</td><td>${s.end?fmtDT(s.end):'<span class="pill down">ongoing</span>'}</td><td class="n">${s.minutes}</td></tr>`);
+  }
+  $('#dtHint').textContent = 'total ' + r.downtime.totalMinutes + ' min';
+
+  // Feeder usage by machine
+  const machines = r.machines || [];
+  const mt = $('#mtabs'); mt.innerHTML='';
+  const sec = $('#machineSections'); sec.innerHTML='';
+  if(!machines.length){ sec.innerHTML = `<div class="empty">No feeder BOM matched today's production.</div>`; return; }
+  if(activeMachine===null || !machines.some(m=>m.machine===activeMachine)) activeMachine = machines[0].machine;
+  for(const m of machines){
+    mt.insertAdjacentHTML('beforeend',
+      `<span class="mtab ${m.machine===activeMachine?'active':''}" onclick="pick(${m.machine})">Machine ${m.machine} <span class="muted">(${m.feeders.length})</span></span>`);
+    let rows='';
+    for(const f of m.feeders){
+      rows += `<tr><td>${f.position||'—'}</td><td>${f.part||'—'}</td><td class="n">${num(f.perBoard)}</td><td class="n">${num(f.expectedUsed)}</td></tr>`;
+    }
+    sec.insertAdjacentHTML('beforeend',
+      `<div class="msec" data-m="${m.machine}" style="display:${m.machine===activeMachine?'block':'none'}">
+        <table><thead><tr><th>Feeder</th><th>Part number</th><th class="n">Per board</th><th class="n">Expected used</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`);
+  }
+}
+
+function pick(m){
+  activeMachine = m;
+  document.querySelectorAll('#mtabs .mtab').forEach(t => t.classList.toggle('active', t.textContent.includes('Machine '+m+' ')));
+  document.querySelectorAll('#machineSections .msec').forEach(s => s.style.display = (+s.dataset.m===m?'block':'none'));
+}
+
+function kpi(cls,v,l){ return `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${l}</div></div>`; }
+
+load();
+</script>
+</body>
+</html>

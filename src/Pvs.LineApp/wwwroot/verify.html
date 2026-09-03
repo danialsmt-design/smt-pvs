@@ -94,6 +94,8 @@
   .banner{padding:11px 14px;border-radius:11px;font-weight:600;margin-bottom:9px;display:none;line-height:1.4}
   .banner.red{background:linear-gradient(180deg,rgba(227,107,96,.18),rgba(227,107,96,.10));color:#ffb7af;border:1px solid rgba(227,107,96,.55);display:block;box-shadow:var(--sh1)}
   .banner.amber{background:linear-gradient(180deg,rgba(230,176,74,.16),rgba(230,176,74,.08));color:#f4d189;border:1px solid rgba(230,176,74,.5);display:block}
+  @keyframes progwarnflash{0%,100%{background:linear-gradient(180deg,rgba(227,107,96,.32),rgba(227,107,96,.16));box-shadow:0 0 0 2px rgba(227,107,96,.55)}50%{background:linear-gradient(180deg,rgba(227,107,96,.10),rgba(227,107,96,.04));box-shadow:0 0 0 2px rgba(227,107,96,.12)}}
+  .banner.warnflash{color:#ffd0ca;border:2px solid rgba(227,107,96,.85);display:block;animation:progwarnflash 1s ease-in-out infinite;font-weight:800;font-size:1.05em}
   /* ---- table ---- */
   table{width:100%;border-collapse:collapse;font-size:14px;font-family:ui-monospace,Consolas,monospace}
   th{text-align:left;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--ln2);font-family:"Segoe UI",system-ui,sans-serif}
@@ -224,6 +226,7 @@
 <header>
   <div class="brand"><span class="dot"></span><h1>Parts Verification</h1><span class="sub">Operator</span></div>
   <span id="model">no model selected</span>
+  <span id="healthPill" class="hpill hp-idle" onclick="toggleHealth()">● Line health</span>
   <nav class="nav">
     <a class="mon back" href="/setup.html">⚙ Model &amp; lot</a>
     <a class="mon" href="/machine-inv.html">Machine inv →</a>
@@ -250,9 +253,157 @@
   <div id="lotMsg"></div>
 </div>
 
+<div id="unloadPop">
+  <div class="upcard">
+    <div class="uphead">🗑 Unload all feeders / အားလုံးဖြုတ်</div>
+    <div class="upbody">
+      <p class="upwarn">Takes <b>every reel off the feeders</b> on all machines — for month-end return-to-store, or loading a completely new model.</p>
+      <ul class="upnote">
+        <li>Each reel's <b>remaining count is kept</b> (StockOut untouched) — reels are ready to return to store and count StockIn.</li>
+        <li>The lot and board count are <b>not</b> changed — a half-done lot resumes from its count when you reload new reels.</li>
+        <li>Reversible — you can restore the last unload if it was done by mistake.</li>
+      </ul>
+      <div class="uprow">
+        <input id="unloadBadge" type="text" placeholder="scan SUPERVISOR badge / ကြီးကြပ်ကတ်ဖတ်ပါ" autocomplete="off">
+        <button class="uphot" id="unloadGo" onclick="doUnload()">Unload all feeders</button>
+      </div>
+      <div id="unloadMsg"></div>
+      <div id="unloadResult" style="display:none"></div>
+    </div>
+    <div class="upfoot">
+      <button class="upsec" onclick="restoreUnload()">↩ Restore last unload</button>
+      <button class="upx" onclick="closeUnload()">Close / ပိတ်</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  #unloadPop{position:fixed;inset:0;z-index:72;display:none;align-items:center;justify-content:center;background:rgba(6,10,8,.72);backdrop-filter:blur(3px)}
+  #unloadPop.show{display:flex}
+  #unloadPop .upcard{background:#141a16;border:1px solid #2a352c;border-radius:18px;padding:20px 22px 14px;max-width:760px;width:94%;box-shadow:0 20px 60px rgba(0,0,0,.5);max-height:90vh;overflow:auto}
+  #unloadPop .uphead{font-size:22px;font-weight:800;margin-bottom:12px;color:var(--ink)}
+  #unloadPop .upwarn{font-size:15px;color:var(--ink);margin:0 0 8px}
+  #unloadPop .upnote{margin:0 0 12px;padding-left:18px;font-size:13px;color:var(--mut);line-height:1.55}
+  #unloadPop .uprow{display:flex;gap:8px;align-items:center;margin:6px 0}
+  #unloadPop .uprow input{flex:1;padding:9px 12px;background:#0c130f;border:1px solid rgba(255,255,255,.14);border-radius:8px;color:inherit;font-size:15px}
+  #unloadPop .uphot{padding:9px 16px;font-weight:800;font-size:15px;background:#3a2020;border:1px solid #7a3333;border-radius:10px;color:#ffd7d0;cursor:pointer;white-space:nowrap}
+  #unloadPop .uphot:hover{border-color:#b23a2e;background:#4a2626}
+  #unloadPop .uphot.armed{background:#b23a2e;border-color:#e0705f;color:#fff}
+  #unloadPop #unloadMsg{min-height:16px;font-size:13px;margin:6px 0}
+  #unloadPop .upfoot{display:flex;gap:10px;justify-content:space-between;margin-top:12px;border-top:1px solid #253026;padding-top:10px}
+  #unloadPop .upsec{padding:7px 14px;font-size:13px;background:transparent;border:1px solid #33422f;border-radius:9px;color:var(--mut);cursor:pointer}
+  #unloadPop .upx{padding:7px 16px;font-size:13px;background:#1b241d;border:1px solid #33422f;border-radius:9px;color:var(--ink);cursor:pointer}
+  #unloadPop .uptbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  #unloadPop .uptbl th,#unloadPop .uptbl td{padding:5px 8px;border-bottom:1px solid #253026;text-align:left}
+  #unloadPop .uptbl thead th{position:sticky;top:0;background:#1a221b;color:var(--mut);font-size:11px}
+  #unloadPop .uptbl td.mono{font-family:ui-monospace,Menlo,monospace}
+</style>
+
+<style>
+  #stopPop{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(6,10,8,.72);backdrop-filter:blur(3px)}
+  #stopPop.show{display:flex}
+  #stopPop .spcard{background:#141a16;border:1px solid #2a352c;border-radius:18px;padding:22px 22px 16px;max-width:720px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  #stopPop .sphead{font-size:24px;font-weight:800;margin-bottom:16px;text-align:center;color:var(--ink)}
+  #stopPop .spgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  #stopPop .spbtn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:18px 10px;font-size:19px;font-weight:800;
+    background:#1b241d;border:1px solid #33422f;border-radius:14px;color:var(--ink);cursor:pointer}
+  #stopPop .spbtn span{font-size:14px;font-weight:600;color:var(--mut)}
+  #stopPop .spbtn:hover{border-color:var(--acc);background:#212c22}
+  #stopPop .spbtn:active{transform:translateY(1px)}
+  #stopPop .spx{display:block;margin:14px auto 0;padding:8px 18px;font-size:14px;background:transparent;border:1px solid #33422f;border-radius:10px;color:var(--mut);cursor:pointer}
+  #dtBtn{background:#1b241d;border:1px solid #33422f;color:var(--ink);border-radius:10px;padding:6px 12px;cursor:pointer}
+  .dtchip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-weight:800;font-size:14px;
+    background:rgba(224,60,48,.14);border:1px solid rgba(224,60,48,.5);color:var(--red);cursor:pointer}
+  .hpill{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-weight:800;font-size:13px;cursor:pointer;border:1px solid #33422f;background:#1b241d;color:var(--mut)}
+  .hpill.hp-ok{border-color:rgba(91,214,111,.5);color:var(--ok)}
+  .hpill.hp-warn{border-color:rgba(240,147,43,.5);color:#F0932B}
+  .hpill.hp-down{border-color:rgba(224,60,48,.55);color:var(--red)}
+  .hpill.hp-parked{border-color:rgba(217,150,42,.5);color:#e6b04a}
+  #healthPop{position:fixed;top:64px;right:16px;z-index:65;display:none;min-width:290px;background:#141a16;border:1px solid #2a352c;border-radius:14px;padding:14px 16px;box-shadow:0 16px 44px rgba(0,0,0,.5)}
+  #healthPop.show{display:block}
+  #healthPop .hph{font-weight:800;margin-bottom:8px;color:var(--ink)}
+  #healthPop .hrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid #222c24;font-size:14px;color:var(--mut)}
+  #healthPop .hrow:first-of-type{border-top:none}
+  .hdot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:8px;vertical-align:middle}
+  .hs-ok{background:var(--ok)} .hs-warn{background:#F0932B} .hs-down{background:var(--red)} .hs-na,.hs-idle{background:#5a6b5f}
+</style>
+
+<div id="healthPop">
+  <div class="hph">Line health / လိုင်းအခြေအနေ</div>
+  <div id="healthRows"></div>
+</div>
+
+<div id="stopPop">
+  <div class="spcard">
+    <div class="sphead">Line stopped — add the reason / လိုင်းရပ် — အကြောင်းထည့်ပါ</div>
+    <div id="spAuto" style="text-align:center;color:var(--mut);font-weight:700;margin:-8px 0 10px;font-size:14px"></div>
+    <div id="spHint" style="display:none;text-align:center;color:var(--acc);font-weight:700;margin:0 0 12px"></div>
+    <div class="spgrid">
+      <button class="spbtn" id="sp_machine" onclick="pickStop('machine')">🛠 Machine problem<span>စက်ပြဿနာ</span></button>
+      <button class="spbtn" id="sp_waiting_part" onclick="pickStop('waiting_part')">📦 Waiting part<span>ပစ္စည်းစောင့်</span></button>
+      <button class="spbtn" id="sp_no_air" onclick="pickStop('no_air')">💨 No air<span>လေမရှိ</span></button>
+      <button class="spbtn" id="sp_rest" onclick="pickStop('rest')">☕ Rest time<span>နားချိန်</span></button>
+      <button class="spbtn" id="sp_scheduled" onclick="pickStop('scheduled')">📋 Scheduled stop<span>စီစဉ်ရပ်</span></button>
+    </div>
+    <input id="spNote" placeholder="optional note / မှတ်ချက်" autocomplete="off" style="width:100%;margin-top:12px;padding:9px 12px;background:#0c130f;border:1px solid rgba(255,255,255,.14);border-radius:8px;color:inherit;font-size:14px">
+    <button class="spx" onclick="dismissStop()">✕ close / ပိတ်</button>
+  </div>
+</div>
+
 <main>
+  <div id="machBar" class="machbar" title="Machine operating state — live from each machine's own Sony R1 signal"></div>
+  <div id="devSim" style="display:none;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;padding:7px 10px;border:1px dashed #55705e;border-radius:10px;background:rgba(40,60,48,.25)">
+    <span style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)">🧪 DEV — set all machines:</span>
+    <button class="dsb" onclick="devAll('ST')">Mounting</button>
+    <button class="dsb" onclick="devAll('PW')">Waiting</button>
+    <button class="dsb" onclick="devAll('SP')">Stopped</button>
+    <button class="dsb" onclick="devAll('ES')">E-Stop</button>
+    <button class="dsb" onclick="devAll('RC')">Recovering</button>
+    <button class="dsb" onclick="devAll('MA')">Manual</button>
+    <button class="dsb" onclick="devAll('AU')">Idle</button>
+    <button class="dsb" onclick="devAll('FL')">Offline</button>
+    <button class="dsb" onclick="devSpread()">↔ Spread</button>
+  </div>
+  <style>
+    #devSim .dsb{font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid #3a4650;background:#141a16;color:inherit;cursor:pointer}
+    #devSim .dsb:hover{border-color:var(--acc);background:#1b241d}
+    .machbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;margin:0 0 10px;border:1px solid var(--ln);border-radius:12px;background:#0f1712}
+    .machbar.bar-run{border-color:#2ea06e}
+    .machbar .mb-lbl{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin-right:2px}
+    .mchip{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:20px;border:1px solid;line-height:1;white-space:nowrap}
+    .mchip b{font-weight:800}
+    .mchip i{font-style:normal;opacity:.65;font-size:11px}
+    .mchip.m-run{color:#5ed39a;background:rgba(46,160,110,.15);border-color:#2ea06e;animation:mountBeat 1.5s ease-in-out infinite}
+    @keyframes mountBeat{
+      0%{box-shadow:0 0 0 0 rgba(46,160,110,0);filter:brightness(1)}
+      12%{box-shadow:0 0 10px 1px rgba(46,160,110,.55);filter:brightness(1.42);border-color:#5ed39a}
+      24%{box-shadow:0 0 3px 0 rgba(46,160,110,.18);filter:brightness(1.05)}
+      38%{box-shadow:0 0 14px 2px rgba(46,160,110,.72);filter:brightness(1.55);border-color:#7ee6b3}
+      55%{box-shadow:0 0 2px 0 rgba(46,160,110,.12);filter:brightness(1)}
+      100%{box-shadow:0 0 0 0 rgba(46,160,110,0);filter:brightness(1)}
+    }
+    @media (prefers-reduced-motion:reduce){ .mchip.m-run{animation:none} }
+    .mchip.m-warn{color:#e8b04a;background:rgba(200,140,30,.14);border-color:#b8791b}
+    .mchip.m-stop{color:#c9d2dc;background:rgba(120,130,145,.14);border-color:#5a6572}
+    .mchip.m-estop{color:#ff8a7a;background:rgba(178,58,46,.18);border-color:#b23a2e;animation:estopBlink .6s steps(1,end) infinite}
+    @keyframes estopBlink{
+      0%{background:rgba(178,58,46,.62);border-color:#ff5c48;color:#fff;box-shadow:0 0 12px 1px rgba(226,80,60,.7)}
+      50%{background:rgba(178,58,46,.10);border-color:#7a3330;color:#ff8a7a;box-shadow:none}
+      100%{background:rgba(178,58,46,.62);border-color:#ff5c48;color:#fff;box-shadow:0 0 12px 1px rgba(226,80,60,.7)}
+    }
+    @media (prefers-reduced-motion:reduce){ .mchip.m-estop{animation:none} }
+    .mchip.m-idle{color:#9fb0c0;background:rgba(120,130,145,.08);border-color:#3a4650}
+    .mchip.m-off{color:#7a8794;background:rgba(40,50,60,.35);border-color:#2a3540}
+    .mchip.m-unk{color:#8a97a8;background:transparent;border-color:#3a4650;border-style:dashed}
+  </style>
   <div class="card compact" id="setup">
     <div class="row" style="gap:10px">
+      <button id="toolsToggle" class="chk" onclick="toggleTools()">⚙ Checks &amp; tools ▸</button>
+      <button id="dtBtn" onclick="openStop()">⏱ Line stop</button>
+      <span id="dtChip" class="dtchip" style="display:none" onclick="openStop()"></span>
+      <a class="setuplink" href="/setup.html" style="margin-left:auto">⚙ Model &amp; lot →</a>
+    </div>
+    <div class="row" id="toolsWrap" style="gap:10px;display:none;margin-top:8px;flex-wrap:wrap">
       <span class="seclbl">Check</span>
       <button class="chk" onclick="start('ShiftChange')">Shift-change</button>
       <button class="chk" onclick="start('LotEnd')">Lot-end</button>
@@ -262,7 +413,8 @@
       <select id="pcMachine" onchange="fillFeeders()"></select>
       <select id="pcFeeder"></select>
       <button onclick="triggerPartChange()">Trigger</button>
-      <a class="setuplink" href="/setup.html" style="margin-left:auto">⚙ Model &amp; lot →</a>
+      <span class="vsep"></span>
+      <button id="unloadBtn" onclick="openUnload()" title="Unload all feeders — month-end return-to-store / new model (supervisor)">🗑 Unload line</button>
     </div>
     <div class="muted" id="ctlMsg" style="margin-top:6px;min-height:0"></div>
   </div>
@@ -271,6 +423,7 @@
   <div class="card">
     <h2>Current task <span class="state idle" id="stateChip">idle</span>
         <span class="op" id="opName"></span></h2>
+    <div class="banner warnflash" id="progWarn" style="display:none"></div>
     <div class="banner red" id="interlock"></div>
     <div class="banner amber" id="pending"></div>
     <div class="banner amber" id="falseCall"></div>
@@ -302,7 +455,44 @@
       <div class="hd" id="exhMiniHd">⏱ Next to run out / နောက်ကုန်မည့် — Top 5</div>
       <div id="exhMiniRows"></div>
     </div>
-    <div class="card" id="lotCard" style="display:none"></div>
+    <!-- Lot card: #lotCardBody is rebuilt by updateLot() each refresh; the set-count footer inside it is a
+         PERSISTENT element (its inputs survive refreshes) integrated under the same card border. -->
+    <div class="card" id="lotCard" style="display:none">
+      <div id="lotCardBody"></div>
+      <div id="setCountInline" style="border-top:1px solid var(--ln2);margin-top:12px;padding-top:9px">
+        <button id="setCountToggle" onclick="toggleSetCount()" style="width:100%;text-align:left;cursor:pointer;background:none;border:none;color:var(--mut);padding:2px 0;font:inherit;font-size:12.5px;font-weight:700;display:flex;justify-content:space-between;align-items:center">
+          <span>✎ Correct count from HMI / HMI ပြင်ဆင်</span>
+          <span id="setCountBadge" style="font-size:12px;color:var(--mut)">▸</span>
+        </button>
+        <div id="setCountWrap" style="display:none;margin-top:8px">
+          <div style="font-size:11.5px;color:var(--mut);margin-bottom:7px">Snap the Produced count above to the Sony HMI count (M4 = PCB‑out). The HMI shows <b>PANELS</b> — key the panel number.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:7px;align-items:center">
+            <input id="scBoards" type="number" min="0" placeholder="HMI panels" inputmode="numeric" style="font-size:18px;padding:8px 10px;width:128px;text-align:center;background:var(--pan2);border:2px solid var(--ln2);color:var(--ink);border-radius:9px">
+            <input id="scBadge" type="text" placeholder="scan supervisor / ကတ်" autocomplete="off" style="font-size:15px;padding:8px 10px;width:180px;background:var(--pan2);border:2px solid var(--ln2);color:var(--ink);border-radius:9px">
+            <label style="font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:5px"><input id="scForce" type="checkbox"> force</label>
+            <button onclick="setLotCount()" style="font-size:16px;font-weight:700;padding:9px 18px;border-radius:11px;cursor:pointer;background:linear-gradient(180deg,var(--acc2),var(--acc));border:1px solid var(--acc2);color:#231703">Set</button>
+          </div>
+          <div id="scMsg" style="font-size:13.5px;color:var(--ok);min-height:18px;margin-top:7px"></div>
+        </div>
+      </div>
+    </div>
+    <button id="extrasToggle" onclick="toggleExtras()" style="margin-top:12px;width:100%;text-align:left;cursor:pointer;background:#0f1712;border:1px solid rgba(255,255,255,.12);color:inherit;padding:10px 12px;border-radius:10px;font:inherit;display:block">
+      <span style="font-weight:700">📥 Board input / ဘုတ်ထည့်</span>
+      <span id="extrasBadge" style="float:right;font-weight:700;font-size:12px;color:var(--mut)">▸ show</span>
+    </button>
+    <div id="extrasWrap" style="display:none;flex-direction:column;flex:1 1 0;min-height:0">
+    <div class="card compact" id="boardCard" style="margin-top:12px">
+      <div class="hd">📥 Board input / ဘုတ်ထည့် <span id="biSummary" style="float:right;font-weight:700;font-size:12px"></span></div>
+      <div style="padding:8px 12px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="biScan" placeholder="scan pack UID / magazine QR — ဘတ်ဖတ်ပါ" autocomplete="off" style="flex:1;padding:7px 10px;background:#0c130f;border:1px solid rgba(255,255,255,.14);border-radius:8px;color:inherit">
+          <span id="biProd" style="display:none;align-items:center;padding:4px 10px;border-radius:20px;font-weight:800;font-size:12px;border:1px solid"></span>
+          <button onclick="resetBoardInput()" title="Restart / fresh">↻</button>
+        </div>
+        <div id="biMsg" style="margin:5px 0 0;min-height:14px;font-size:12px;color:var(--mut)"></div>
+      </div>
+    </div>
+    </div>
   </div>
   </div>
 </main>
@@ -333,7 +523,7 @@ async function selectTab(m){
 // EXCEPT while the operator is actually using one of the on-page controls.
 function focusScan(){
   const a = document.activeElement;
-  if (a && (a.id === 'pcMachine' || a.id === 'pcFeeder' || a.id === 'lotQty' || a.id === 'lotBadge' || a.id === 'pcQty')) return;
+  if (a && (a.id === 'pcMachine' || a.id === 'pcFeeder' || a.id === 'lotQty' || a.id === 'lotBadge' || a.id === 'pcQty' || a.id === 'biScan' || a.id === 'unloadBadge' || a.id === 'spNote' || a.id === 'scBoards' || a.id === 'scBadge')) return;
   $('scan').focus();
 }
 
@@ -341,6 +531,124 @@ async function api(path, body){
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
   return r.json();
 }
+
+
+// Collapse Board-input behind a toggle (verify page declutter). State persists; the button
+// keeps their live counts visible so nothing is lost while collapsed.
+function toggleExtras(){ var w=$('extrasWrap'); if(!w) return; var open=(w.style.display==='none'); w.style.display=open?'flex':'none'; try{ localStorage.setItem('pvsExtras', open?'1':'0'); }catch(e){} syncExtrasBadge(); }
+function syncExtrasBadge(){ var w=$('extrasWrap'), b=$('extrasBadge'); if(!w||!b) return; var open=(w.style.display!=='none'); var bi=$('biSummary'); var s=[]; if(bi&&bi.textContent.trim())s.push(bi.textContent.trim()); var sum=s.join('  ·  '); b.textContent = open ? '▾ hide' : (sum ? sum+'   ▸' : '▸ show'); }
+(function(){ var w=$('extrasWrap'); if(!w) return; var open=false; try{ open=(localStorage.getItem('pvsExtras')==='1'); }catch(e){} w.style.display=open?'flex':'none'; syncExtrasBadge(); setInterval(syncExtrasBadge, 4000); })();
+
+// Declutter: supervisor checks + manual change + unload live behind a "Checks & tools" toggle (state persists).
+function toggleTools(){ var w=$('toolsWrap'); if(!w) return; var open=(w.style.display==='none'); w.style.display=open?'flex':'none'; var t=$('toolsToggle'); if(t) t.innerHTML='⚙ Checks &amp; tools '+(open?'▾':'▸'); try{ localStorage.setItem('pvsTools', open?'1':'0'); }catch(e){} }
+(function(){ var w=$('toolsWrap'); if(!w) return; var open=false; try{ open=(localStorage.getItem('pvsTools')==='1'); }catch(e){} w.style.display=open?'flex':'none'; var t=$('toolsToggle'); if(t) t.innerHTML='⚙ Checks &amp; tools '+(open?'▾':'▸'); })();
+
+// ---- Unload all feeders (supervisor: month-end return-to-store / new model) ----
+// Rule tree (docs/pvs-rule-trees.md): Gate L2+ badge -> two-tap Confirm -> POST /api/unload ->
+// show return manifest -> Reverse via /api/unload/restore. Server keeps StockOut + lot/count intact.
+var _unloadReels = [];
+function openUnload(){ var p=$('unloadPop'); if(!p) return; $('unloadBadge').value=''; $('unloadMsg').textContent=''; var res=$('unloadResult'); res.style.display='none'; res.innerHTML=''; var go=$('unloadGo'); go.classList.remove('armed'); go.textContent='Unload all feeders'; p.classList.add('show'); setTimeout(function(){ $('unloadBadge').focus(); }, 60); }
+function closeUnload(){ var p=$('unloadPop'); if(p) p.classList.remove('show'); var go=$('unloadGo'); if(go){ go.classList.remove('armed'); go.textContent='Unload all feeders'; } }
+async function doUnload(){
+  var b=$('unloadBadge').value.trim();
+  if(!b){ $('unloadMsg').innerHTML='<span style="color:var(--red)">Scan a SUPERVISOR badge (L2+) first / ကြီးကြပ်ကတ်ဖတ်ပါ.</span>'; $('unloadBadge').focus(); return; }
+  var go=$('unloadGo');
+  if(!go.classList.contains('armed')){ go.classList.add('armed'); go.textContent='Tap again to CONFIRM'; $('unloadMsg').innerHTML='<span style="color:#e8a13a">This takes EVERY reel off the feeders on all machines. Tap again to confirm.</span>'; return; }
+  go.classList.remove('armed'); go.textContent='Unload all feeders';
+  $('unloadMsg').textContent='Unloading…';
+  var r=await api('/api/unload',{badge:b});
+  $('unloadBadge').value='';
+  if(!r || !r.ok){ $('unloadMsg').innerHTML='<span style="color:var(--red)">'+((r&&r.message)||'Unload refused.')+'</span>'; return; }
+  $('unloadMsg').innerHTML='<span style="color:var(--ok)">'+(r.message||('Unloaded '+r.count+' reels.'))+'</span>';
+  _unloadReels = r.reels||[];
+  renderUnloadManifest(_unloadReels);
+}
+function renderUnloadManifest(reels){
+  var box=$('unloadResult'); if(!box) return;
+  if(!reels.length){ box.style.display='none'; box.innerHTML=''; return; }
+  var rows=reels.map(function(x){ return '<tr><td>M'+x.machine+'</td><td>F'+x.feeder+'</td><td>'+x.part+'</td><td class="mono">'+x.uid+'</td><td style="text-align:right">'+x.remaining+'</td></tr>'; }).join('');
+  box.innerHTML='<div style="margin:10px 0 4px;font-weight:700">Return manifest — '+reels.length+' reels off the feeders'
+    +'<button class="upsec" style="float:right" onclick="exportUnloadCsv()">⬇ CSV</button></div>'
+    +'<div style="max-height:220px;overflow:auto;border:1px solid var(--ln);border-radius:8px"><table class="uptbl"><thead><tr><th>M/C</th><th>Feeder</th><th>Part</th><th>UID</th><th>Qty kept</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  box.style.display='block';
+}
+function exportUnloadCsv(){
+  if(!_unloadReels.length) return;
+  var csv='Machine,Feeder,Part,UID,Remaining\n'+_unloadReels.map(function(x){ return x.machine+','+x.feeder+','+x.part+','+x.uid+','+x.remaining; }).join('\n');
+  var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='unload-manifest.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+async function restoreUnload(){
+  var b=$('unloadBadge').value.trim();
+  if(!b){ $('unloadMsg').innerHTML='<span style="color:var(--red)">Scan a SUPERVISOR badge to restore / ကြီးကြပ်ကတ်ဖတ်ပါ.</span>'; $('unloadBadge').focus(); return; }
+  $('unloadMsg').textContent='Restoring last unload…';
+  var r=await api('/api/unload/restore',{badge:b});
+  $('unloadBadge').value='';
+  $('unloadMsg').innerHTML='<span style="color:'+(r&&r.ok?'var(--ok)':'var(--red)')+'">'+((r&&r.message)||'Restore failed.')+'</span>';
+  if(r&&r.ok){ var res=$('unloadResult'); res.style.display='none'; res.innerHTML=''; _unloadReels=[]; }
+}
+(function(){ var el=$('unloadBadge'); if(el){ el.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); doUnload(); } }); } })();
+
+// ---- Machine status bar (live operating state from each machine's own Sony R1 signal) ----
+function condMeta(c){
+  switch(c){
+    case 'Mounting':     return {t:'MOUNTING',       cls:'m-run'};
+    case 'Starved':      return {t:'WAITING BOARD',  cls:'m-warn'};
+    case 'Stopped':      return {t:'STOPPED',        cls:'m-stop'};
+    case 'EmergencyStop':return {t:'E-STOP',         cls:'m-estop'};
+    case 'NotAuto':      return {t:'MANUAL',         cls:'m-idle'};
+    case 'Recovering':   return {t:'RECOVERING',     cls:'m-warn'};
+    case 'Halted':       return {t:'HALT',           cls:'m-idle'};
+    case 'Idle':         return {t:'IDLE',           cls:'m-idle'};
+    case 'Offline':      return {t:'OFFLINE',        cls:'m-off'};
+    default:             return {t:'— unknown',      cls:'m-unk'};
+  }
+}
+async function renderMachineBar(){
+  var s; try{ s = await (await fetch('/api/status')).json(); }catch(e){ return; }
+  var dev=$('devSim'); if(dev) dev.style.display = (s.line && s.line.indexOf('DEV')>=0) ? 'flex' : 'none';
+  var bar=$('machBar'); if(!bar || !s.machines) return;
+  var anyRun = s.machines.some(function(m){ return m.running; });
+  bar.className = 'machbar' + (anyRun ? ' bar-run' : '');
+  bar.innerHTML = '<span class="mb-lbl">Machines</span>' + s.machines.map(function(m){
+    var meta = condMeta(m.condition);
+    var since='';
+    if(m.conditionSince){ var secs=Math.max(0, Math.round((Date.now()-new Date(m.conditionSince).getTime())/1000)); since = secs<90 ? secs+'s' : Math.round(secs/60)+'m'; }
+    return '<span class="mchip '+meta.cls+'">M'+m.machine+' <b>'+meta.t+'</b>'+(since?' <i>'+since+'</i>':'')+(m.skipped?' ·skip':'')+'</span>';
+  }).join('');
+}
+setInterval(renderMachineBar, 4000); renderMachineBar();
+
+// DEV-only machine-condition simulator (the buttons only appear on the DEV instance; the endpoint is
+// Development-env only, so this is inert on the real line PCs).
+async function devSet(m, code){ try{ await fetch('/api/dev/condition', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({machine:m, code:code})}); }catch(e){} }
+async function devAll(code){ for(var m=1;m<=4;m++){ await devSet(m, code); } renderMachineBar(); }
+async function devSpread(){ var codes=['ST','PW','SP','ES']; for(var i=0;i<4;i++){ await devSet(i+1, codes[i]); } renderMachineBar(); }
+
+// ---- Board input tracking (first-side packs + second-side magazines) ----
+let biState=null;
+async function biScanSubmit(v){
+  v=(v||'').trim(); if(!v) return;
+  let r; try{ r=await api('/api/boardinput/scan',{value:v}); }catch(e){ return; }
+  $('biMsg').textContent = r.message||'';
+  if(r.state){ biState=r.state; renderBoardInput(); } else { refreshBoardInput(); }
+}
+async function refreshBoardInput(){
+  try{ biState=await (await fetch('/api/boardinput/state')).json(); }catch(e){ return; }
+  renderBoardInput();
+}
+function renderBoardInput(){
+  const s=biState; if(!s) return;
+  let sum=(s.totalPcs||0).toLocaleString()+' staged';
+  if(s.expectedMagazines>0) sum+=' · mag '+s.magazinesScanned+'/'+s.expectedMagazines;
+  else if(s.count>0) sum+=' · '+s.count+' pack'+(s.count>1?'s':'');
+  $('biSummary').textContent=sum;
+  const p=$('biProd'); p.style.display='inline-flex';
+  if(s.producing){ p.textContent='● producing'; p.style.color='var(--ok)'; p.style.borderColor='rgba(91,214,111,.5)'; p.style.background='rgba(91,214,111,.12)'; }
+  else { p.textContent='● not producing'; p.style.color='var(--red)'; p.style.borderColor='rgba(224,60,48,.5)'; p.style.background='rgba(224,60,48,.14)'; }
+}
+async function resetBoardInput(){ try{ await api('/api/boardinput/reset',{}); }catch(e){} refreshBoardInput(); }
+(function(){ const el=$('biScan'); if(el){ el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=el.value; el.value=''; biScanSubmit(v); } }); } })();
+setInterval(refreshBoardInput, 4000); refreshBoardInput();
 
 // Model selection + lot selection moved to /setup.html. This page is live scan activity only.
 async function start(mode){ const r = await api('/api/session/start',{mode}); $('ctlMsg').textContent=r.message; refresh(); }
@@ -529,7 +837,7 @@ function updateLot(l){
     + `<div><div class="ls-h">Target</div><div class="ls-v">${l.effectiveTarget!=null?Number(l.effectiveTarget).toLocaleString():'—'}</div><div class="ls-u">boards${l.extra?(' · +'+l.extra):''}</div></div>`
     + `<div><div class="ls-h">To lot end</div><div class="ls-v ${endCls}">${endVal}</div><div class="ls-u">boards / ကုန်ရန်</div></div>`
     + `</div>`;
-  card.innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>` + stats
+  $('lotCardBody').innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>` + stats
     + (done ? `<div class="unit" style="margin-top:8px">✅ lot complete / လော့ပြီး — set the next lot on ⚙ Model &amp; lot</div>` : '');
   if(warn){
     if(!lotDismissedFor(l.lotNo) && !typingLot){
@@ -547,6 +855,28 @@ async function addLotQty(){
   if(!b){ $('lotMsg').textContent='Scan a SUPERVISOR badge / ကြီးကြပ်ကတ်ဖတ်ပါ.'; $('lotBadge').focus(); return; }
   const r = await api('/api/lot/addqty', {qty:q, badge:b});
   $('lotMsg').textContent = r.message; $('lotQty').value=''; $('lotBadge').value=''; refresh();
+}
+function toggleSetCount(){
+  const w=$('setCountWrap'), open=w.style.display!=='none';
+  w.style.display=open?'none':'block'; $('setCountBadge').textContent=open?'▸ show':'▾ hide';
+  if(!open) $('scBoards').focus();
+}
+// Snap PVS's produced count to the Sony HMI value (supervisor badge). Backend re-anchors the lot count and the
+// next refresh() redraws the card. Refused when over target unless "force" is ticked — the message says why.
+async function setLotCount(){
+  const panels = parseInt($('scBoards').value||''); const b=$('scBadge').value.trim(); const force=$('scForce').checked;
+  const msg=$('scMsg'); msg.style.color='var(--ok)';
+  if(isNaN(panels)||panels<0){ msg.style.color='var(--red)'; msg.textContent='Enter the HMI panel count.'; $('scBoards').focus(); return; }
+  if(!b){ msg.style.color='var(--red)'; msg.textContent='Scan a SUPERVISOR badge / ကြီးကြပ်ကတ်ဖတ်ပါ.'; $('scBadge').focus(); return; }
+  msg.textContent='Setting…';
+  try{
+    const r=await api('/api/lot/adopt', {panels:panels, badge:b, force:force});
+    const refused = (r.message||'').toLowerCase().startsWith('refused');
+    msg.style.color = refused ? 'var(--red)' : 'var(--ok)';
+    msg.textContent = r.message||'';
+    if(!refused){ $('scBoards').value=''; $('scBadge').value=''; $('scForce').checked=false; }
+    refresh();
+  }catch(e){ msg.style.color='var(--red)'; msg.textContent='Set failed: '+e; }
 }
 
 // ---- lot selection (dropdown + set produced) moved to /setup.html; this page only DISPLAYS lot progress via updateLot ----
@@ -772,12 +1102,91 @@ function render(st){
   updateBigStep(st);   // drive the big full-screen step overlay
 }
 
+// ---- Downtime capture: reason pop-up + recording chip ----
+let stopState = null, stopDismissed = false;
+// Machine-side reasons (auto, from R1) + operator comment classifications share this label map.
+const STOP_LABELS = {machine:'Machine problem',waiting_part:'Waiting part',no_air:'No air',rest:'Rest time',scheduled:'Scheduled stop',
+  estop:'E-STOP',error:'Error recovery',starved:'Waiting boards',stopped:'Stopped',offline:'Offline'};
+function openStop(){
+  const sug = stopState && stopState.suggestedReason;
+  ['machine','waiting_part','no_air','rest','scheduled'].forEach(k=>{
+    const b=$('sp_'+k); if(b) b.style.outline = (k===sug)?'2px solid var(--acc)':'none';
+  });
+  const auto=$('spAuto');
+  if(auto){
+    if(stopState && stopState.down){
+      const mr=STOP_LABELS[stopState.machineReason]||stopState.machineReason||'stopped';
+      const mc=(stopState.machines&&stopState.machines.length)?' · M'+stopState.machines.join(', M'):'';
+      auto.textContent='Auto-detected: '+mr+mc+' · '+fmtDur(stopState.openSeconds)+' — classify it:';
+    } else auto.textContent='';
+  }
+  const hint=$('spHint');
+  if(sug){ hint.style.display='block'; hint.textContent='Break time — likely Rest / နားချိန် ဖြစ်နိုင်'; }
+  else { hint.style.display='none'; }
+  $('stopPop').classList.add('show');
+}
+function dismissStop(){ $('stopPop').classList.remove('show'); stopDismissed = true; }
+async function pickStop(reason){
+  $('stopPop').classList.remove('show');
+  const note = ($('spNote') && $('spNote').value.trim()) || '';
+  try{ await api('/api/stop/reason',{reason, note}); }catch(e){}
+  if($('spNote')) $('spNote').value='';
+  stopDismissed = false;
+  refreshStop();
+}
+function fmtDur(s){ s=Math.max(0,s|0); const m=(s/60)|0, ss=s%60; return m+':'+String(ss).padStart(2,'0'); }
+function renderStop(){
+  const st = stopState; if(!st) return;
+  const chip = $('dtChip');
+  if(st.down){
+    chip.style.display='inline-flex';
+    const eff = STOP_LABELS[st.openReason]||st.openReason;
+    chip.textContent = '⏺ '+eff+' · '+fmtDur(st.openSeconds)+(st.operatorReason?'':' ⚠');   // ⚠ = not yet classified
+    // Auto-prompt to CLASSIFY an uncommented auto-stop (once), unless a scan-check overlay is up or dismissed.
+    const checkUp = $('bigStep').style.display && $('bigStep').style.display!=='none';
+    if(!st.operatorReason && !stopDismissed && !checkUp){ openStop(); }
+  } else {
+    chip.style.display='none';
+    stopDismissed = false;                 // re-arm the prompt once the line runs again
+    $('stopPop').classList.remove('show');
+  }
+}
+async function refreshStop(){
+  try{ stopState = await (await fetch('/api/stop/state')).json(); }catch(e){ return; }
+  renderStop();
+}
+setInterval(refreshStop, 2000);
+setInterval(()=>{ if(stopState && stopState.down){ stopState.openSeconds++; renderStop(); } }, 1000);
+
+// ---- Line health pill (rollup of serial / producing / program / check / DB / downtime) ----
+let healthOpen=false;
+const H_SIG=[['serial','Serial link / စီရီယယ်'],['producing','Producing / ထုတ်နေ'],['program','Program / ပရိုဂရမ်'],['check','Shift check / အလှည့်စစ်'],['db','DB link / DB'],['downtime','Downtime / ရပ်ချိန်']];
+function toggleHealth(){ healthOpen=!healthOpen; $('healthPop').classList.toggle('show',healthOpen); }
+async function refreshHealth(){
+  let h; try{ h=await (await fetch('/api/health')).json(); }catch(e){ return; }
+  const st=h.status||'idle', pill=$('healthPill');
+  pill.className='hpill hp-'+st;
+  pill.textContent = st==='parked' ? '▣ Non-Canon (paused)' : '● Line '+({ok:'OK',warn:'WARN',down:'DOWN'}[st]||'—');
+  $('healthRows').innerHTML = H_SIG.map(([k,label])=>{
+    const s=(h.signals&&h.signals[k])||{}, state=s.state||'na';
+    let extra='';
+    if(k==='producing'&&s.openReason) extra=' · '+s.openReason;
+    if(k==='serial'&&s.machines){ const bad=s.machines.filter(m=>m.state==='down'||m.state==='warn').map(m=>'M'+m.machine); if(bad.length) extra=' · '+bad.join(','); }
+    if(k==='downtime'&&s.minutesToday!=null&&s.minutesToday>0) extra=' · '+s.minutesToday+'m';
+    if(k==='program'&&s.disagree) extra=' · disagree';
+    return `<div class="hrow"><span><span class="hdot hs-${state}"></span>${label}</span><span>${state.toUpperCase()}${extra}</span></div>`;
+  }).join('');
+}
+setInterval(refreshHealth, 4000); refreshHealth();
+
 async function refresh(){
   try{
     render(await (await fetch('/api/session')).json());
     // read-only model indicator in the header (set it on /setup.html)
     const cm = await (await fetch('/api/currentmodel')).json();
-    if(cm.model){
+    if(cm.nonCanon){
+      $('model').textContent = '▣ Non-Canon — tracking paused';
+    } else if(cm.model){
       const mismatch = cm.manual && cm.verify==='mismatch';
       $('model').textContent = cm.model + ' · ' + cm.side + ' side'
         + (cm.auto?' · auto':(cm.manual?(mismatch?' · ⛔ mismatch':' · set'):''));
@@ -785,42 +1194,60 @@ async function refresh(){
     focusScan();
   }catch(e){}
 
-  // docked exhaust panel — ALWAYS shows the run-out forecast time; a coverage badge is added underneath:
-  // green "✓ lasts lot" when the reel finishes the lot, orange "⚠ short for lot" when the issued material won't.
+  // MID-LOT PROGRAM MISMATCH — flash a warning when online machines disagree on the loaded model
+  // (a program was changed on a machine without ending/changing the lot, e.g. one cell left on the old model).
+  try{
+    const st = await (await fetch('/api/status')).json();
+    const pw = st.programWarn;
+    const el = $('progWarn');
+    if(pw && pw.warn){ el.textContent = pw.message; el.style.display='block'; }
+    else { el.style.display='none'; }
+  }catch(e){}
+
+  // docked panel = the REEL-CHANGE forecast: which loaded reels won't last the lot (a swap is due).
+  // A change is calm when a standby reel of that part is already staged ("spare ✓"); it's only urgent
+  // ("request") when no spare is staged AND the issued material can't cover the lot. This is NOT a raw
+  // material-shortage alarm — a feeder with a standby ready is covered, not short.
   try{
     const ex = await (await fetch('/api/exhaust')).json();
-    // rank: material-short first, then soonest to run out (the forecast). Times stay visible for every row.
+    // rank: real requests first, then soonest to run out (the forecast). Times stay visible for every row.
     const ranked = (ex.rows||[]).slice().sort((a,b)=>{
-      if(!!a.underIssued !== !!b.underIssued) return a.underIssued?-1:1;
+      if(!!a.needsRequest !== !!b.needsRequest) return a.needsRequest?-1:1;
       return (a.minutes==null?1e9:a.minutes)-(b.minutes==null?1e9:b.minutes);
     });
     const rows = ranked.slice(0,6);
     const hd = $('exhMiniHd');
     if(ex.lotTracked && ranked.length){
-      const bd = ex.boardsToLotEnd, n = ex.changesBeforeLotEnd||0, short = (ex.underIssuedParts||[]).length;
-      if(short>0){ hd.className='hd warnhd'; hd.textContent = `⏱ next to run out · ⚠ ${short} short for lot (${bd} to go)`; }
-      else { hd.className='hd'; hd.textContent = `⏱ next to run out · ${n} to change before lot end (${bd} to go)`; }
+      const bd = ex.boardsToLotEnd, chg = ex.changesBeforeLotEnd||0, req = ex.requestsNeeded||0;
+      if(req>0){ hd.className='hd warnhd'; hd.textContent = `⏱ next to run out · ⚠ ${req} reel${req>1?'s':''} to request (${bd} to go)`; }
+      else if(chg>0){ hd.className='hd'; hd.textContent = `⏱ next to run out · ${chg} change${chg>1?'s':''} due · spares ready (${bd} to go)`; }
+      else { hd.className='hd'; hd.textContent = `⏱ next to run out · reels last the lot (${bd} to go)`; }
     } else { hd.className='hd'; hd.textContent = '⏱ Next to run out / နောက်ကုန်မည့်'; }
     const c = $('exhMiniRows');
     if(!rows.length){ c.innerHTML = '<div class="loc">no tracked reels yet / မရှိ</div>'; }
-    else c.innerHTML = '<div class="colhd"><span>Part Number</span><span>Machine</span><span>Feeder</span><span>Out (Hrs)</span></div>'
+    else c.innerHTML = '<div class="colhd"><span>Part Number</span><span>Machine</span><span>Feeder</span><span>Out (Hrs) / Qty</span></div>'
       + rows.map(r=>{
       let cls = r.minutes==null ? '' : (r.minutes<45?'red':(r.minutes<120?'amber':'ok'));
-      if(r.underIssued){ cls='short'; }
+      if(r.needsRequest){ cls='short'; }              // only a true request turns the row urgent
+      // standby badge: covered (spare staged) reads calm; no-spare request reads urgent
+      const badge = r.lastsLot ? ''
+        : r.needsRequest ? ' <span style="color:#ff6b6b;font-size:.72em;font-weight:700">request</span>'
+        : r.spareReady   ? ` <span style="color:#5bd66f;font-size:.72em;font-weight:600">spare ✓${r.spareReels>1?' ×'+r.spareReels:''}</span>`
+        :                  ' <span style="color:#e0a23a;font-size:.72em;font-weight:600">change</span>';
       // out time in hours (from the run-out minutes); if it lasts past the shift, show the text estimate
       const hrs = (r.minutes==null) ? (r.timeLeft||'—') : (r.minutes/60).toFixed(1)+' h';
       return `<div class="er ${cls}">`
-        + `<div class="c pt">${r.part}</div>`
+        + `<div class="c pt">${r.part}${badge}</div>`
         + `<div class="c">M${r.machine}</div>`
         + `<div class="c">F${r.feeder}</div>`
-        + `<div class="c tm ${cls==='short'?'amber':cls}">${hrs}</div></div>`;
+        + `<div class="c tm ${cls==='short'?'amber':cls}">${hrs}<span style="display:block;font-size:.72em;color:var(--mut);font-weight:600">${r.remaining!=null?r.remaining.toLocaleString():''}</span></div></div>`;
     }).join('');
   }catch(e){}
 
   // lot progress / end-of-lot (display only; lot SELECTION lives on /setup.html)
   try{ updateLot(await (await fetch('/api/lot')).json()); }catch(e){}
 }
-loadFeeders(); refresh(); setInterval(refresh, 2000);
+loadFeeders(); refresh(); setInterval(refresh, 2000); refreshStop();
 $('scan').focus();
 // After clicking anywhere that isn't the dropdown, return focus to the scanner so the next
 // scan lands in the app (buttons/empty space included — the dropdown is the only exception).

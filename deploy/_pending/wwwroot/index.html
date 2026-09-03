@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Parts Verification — Line Monitor</title>
+<style>
+  :root{
+    --bg:#0F1512; --pan:#16201B; --pan2:#1D2A23; --ln:#2A3B31;
+    --ink:#E8EFEA; --mut:#8AA096; --acc:#D9962A; --ok:#4FB477; --amber:#E0A93B; --red:#D9635A;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",Calibri,Arial,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  .sub{color:var(--mut);font-size:13px}
+  .clock{margin-left:auto;font-family:Consolas,monospace;color:var(--acc);font-size:16px}
+  main{padding:16px 20px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));align-content:start}
+  #exhCard, #verifyCard{grid-column:1/-1}   /* full-width rows; the rest flow into columns */
+  #healthBanner{grid-column:1/-1;background:rgba(217,99,90,.16);border:1px solid var(--red);color:var(--red);
+    border-radius:10px;padding:13px 16px;font-weight:700;font-size:15px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:16px 18px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 12px;font-weight:600}
+  .machines{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .m{background:var(--pan2);border:1px solid var(--ln);border-radius:8px;padding:12px}
+  .m .name{font-weight:600;font-size:15px}
+  .m .st{font-size:12.5px;color:var(--mut);margin-top:4px;display:flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--red)}
+  .dot.on{background:var(--ok)} .dot.idle{background:var(--mut)}
+  .m .rate{font-size:22px;font-weight:600;margin-top:8px}
+  .m .rate small{font-size:12px;color:var(--mut);font-weight:400}
+  .m button{margin-top:10px;background:var(--pan);border:1px solid var(--ln);color:var(--ink);
+    border-radius:6px;padding:6px 10px;font:12.5px inherit;cursor:pointer;width:100%}
+  .m button:hover{border-color:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;color:var(--mut);font-weight:600;font-size:12px;border-bottom:1px solid var(--ln);padding:8px 10px}
+  td{border-bottom:1px solid #131A16;padding:9px 10px;font-family:Consolas,monospace}
+  .chip{display:inline-block;padding:3px 10px;border-radius:var(--radius,8px);font-weight:600;font-family:inherit}
+  .chip.red{background:rgba(217,99,90,.16);color:var(--red)}
+  .chip.amber{background:rgba(224,169,59,.16);color:var(--amber)}
+  .chip.ok{background:rgba(79,180,119,.16);color:var(--ok)}
+  .empty{color:var(--mut);padding:14px 10px;font-family:inherit}
+  .vbtns{display:flex;gap:12px;flex-wrap:wrap}
+  .vbtn{border-radius:10px;padding:12px 18px;border:1px solid var(--ln);background:var(--pan2);color:var(--mut);min-width:210px}
+  .vbtn .t{font-size:16px;font-weight:600}
+  .vbtn .s{font-size:12.5px;font-weight:400;margin-top:3px;opacity:.95}
+  .vbtn.green{background:rgba(79,180,119,.16);border-color:var(--ok);color:var(--ok)}
+  .vbtn.amber{background:rgba(224,169,59,.16);border-color:var(--amber);color:var(--amber)}
+  .ev{display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid #131A16;font-family:Consolas,monospace;font-size:13.5px}
+  .ev .t{color:var(--mut)}
+  .ev .badge{background:rgba(217,99,90,.16);color:var(--red);padding:2px 9px;border-radius:6px;font-weight:600}
+  #exhCard{position:sticky;top:0;z-index:6;box-shadow:0 6px 16px rgba(0,0,0,.35)}
+  .exhlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
+  .exrow{display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:14px;
+         background:var(--pan2);border:1px solid var(--ln);border-left:7px solid var(--mut);border-radius:10px;padding:11px 16px}
+  .exrow.red{border-left-color:var(--red)} .exrow.amber{border-left-color:var(--amber)} .exrow.ok{border-left-color:var(--ok)}
+  .exrow.change{border-left-color:var(--ok);animation:okflash 1s ease-in-out infinite}
+  @keyframes okflash{0%,100%{background:var(--pan2)}50%{background:rgba(79,180,119,.30)}}
+  .exrow .rnk{font-size:22px;font-weight:800;color:var(--mut);text-align:center}
+  .exrow .loc{font-size:13px;color:var(--mut);font-weight:600}
+  .exrow .prt{font-size:22px;font-weight:800;font-family:Consolas,"Segoe UI",monospace;line-height:1.1;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .exrow .r{text-align:right;white-space:nowrap}
+  .exrow .tm{font-size:22px;font-weight:800}
+  .exrow .tm.red{color:var(--red)} .exrow .tm.amber{color:var(--amber)} .exrow .tm.ok{color:var(--ok)} .exrow .tm.na{color:var(--mut)}
+  .exrow .q{font-size:12.5px;color:var(--mut);margin-top:2px}
+  .exrow .okmsg{font-size:22px;font-weight:800;color:var(--ok)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Parts Verification</h1>
+  <span class="sub" id="lineName">—</span>
+  <span style="margin-left:auto;display:flex;gap:14px;align-items:center">
+    <a href="/top5.html" style="color:var(--mut);text-decoration:none;font-size:14px">Next-out</a>
+    <a href="/report.html" style="color:var(--mut);text-decoration:none;font-size:14px">Daily report</a>
+    <a href="/verify.html" style="color:var(--mut);text-decoration:none;font-size:14px">Verify</a>
+    <span class="clock" id="clock">--:--:--</span>
+    <button id="shutdownBtn" title="Shut down PVS on this line (frees the serial ports)"
+            style="background:none;border:1px solid var(--mut);color:var(--mut);border-radius:6px;padding:3px 9px;font-size:13px;cursor:pointer">⏻ Shutdown</button>
+  </span>
+</header>
+
+<main>
+  <div id="healthBanner" style="display:none"></div>
+  <div class="card" id="exhCard">
+    <h2>⏱ Parts-out forecast / ပစ္စည်းကုန်ခန့်မှန်း — next to run out / နောက်ကုန်မည့် <small id="exhHint" style="color:var(--mut);font-weight:400;font-size:13px"></small></h2>
+    <div class="exhlist" id="exhaust"></div>
+    <div class="empty" id="exhEmpty" style="display:none">No tracked reels yet — run a shift or model-change check. / ရီးလ်မှတ်တမ်းမရှိသေး — ဆစ်ဖ်ပြောင်း သို့ မော်ဒယ်ပြောင်း စစ်ဆေးပါ.</div>
+  </div>
+
+  <div class="card" id="stagedCard" style="display:none">
+    <h2>📥 Issued, not yet on machine / ထုတ်ပြီး စက်မတင်ရသေး <small id="stagedHint" style="color:var(--mut);font-weight:400;font-size:13px"></small></h2>
+    <div class="exhlist" id="staged"></div>
+  </div>
+
+  <div class="card" id="verifyCard">
+    <h2>Verification status</h2>
+    <div class="vbtns" id="verifyBtns"></div>
+  </div>
+
+  <div class="card">
+    <h2>Machines</h2>
+    <div class="machines" id="machines"></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent parts-out</h2>
+    <div id="events"></div>
+    <div class="empty" id="noEvents">No parts-out yet this session.</div>
+  </div>
+
+  <div class="card">
+    <h2>What runs out next</h2>
+    <table>
+      <thead><tr><th>#</th><th>Part number</th><th>Time left</th><th>Runs out</th><th>Remaining</th><th>On machines</th></tr></thead>
+      <tbody id="forecast"></tbody>
+    </table>
+    <div class="empty" id="emptyMsg" style="display:none">No consumption yet — waiting for a running model with tracked feeders.</div>
+  </div>
+</main>
+
+<script>
+const RED = 45, AMBER = 120; // thresholds (min); overridden from /api/status if present
+const TOP_N = 6;             // how many soonest-to-exhaust feeders to show (operator-friendly, not all)
+let exPrev = {};             // feeder -> last remaining (to detect reel changes)
+let exChanged = {};          // feeder -> {until, machine, feeder, part} — flash "Change OK" for 10s
+function fmt2(n){ return String(n).padStart(2,'0'); }
+function tick(){ const d=new Date(); document.getElementById('clock').textContent = `${fmt2(d.getHours())}:${fmt2(d.getMinutes())}:${fmt2(d.getSeconds())}`; }
+setInterval(tick,1000); tick();
+
+function minutesFromTimeLeft(t){
+  if(!t || t==='—') return Infinity;
+  if(t==='now') return 0;
+  let m=0; const h=t.match(/(\d+)\s*h/); const mm=t.match(/(\d+)\s*m/); const only=t.match(/^(\d+)\s*min/);
+  if(only) return +only[1];
+  if(h) m+=(+h[1])*60; if(mm) m+=(+mm[1]); return m||Infinity;
+}
+function chipClass(mins){ return mins<RED?'red':(mins<AMBER?'amber':'ok'); }
+
+async function reconnect(machine){
+  try{
+    const r = await fetch('/api/machine/reconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({machine})});
+    const j = await r.json();
+    // brief toast via the clock area
+    console.log(j.message);
+    setTimeout(refresh, 800);
+  }catch(e){}
+}
+
+async function refresh(){
+  try{
+    const s = await (await fetch('/api/status')).json();
+    const v = s.verify || {};
+    document.getElementById('lineName').textContent =
+      s.line + '  ·  line ' + s.lineId + (v.currentShift ? '  ·  ' + v.currentShift + ' shift' : '');
+
+    // health banner — machines with no serial port / no data (e.g. a serial card not detected)
+    const noPort = (s.machines||[]).filter(m=>!m.portOpen).map(m=>'M'+m.machine);
+    const noData = (s.machines||[]).filter(m=>m.portOpen && !m.online).map(m=>'M'+m.machine);
+    const hb = document.getElementById('healthBanner');
+    let hmsg='';
+    if(noPort.length) hmsg += `⚠ ${noPort.join(', ')} — no serial port / serial port မရှိ (check the serial card / cables — serial card/ကေဘယ် စစ်ပါ). `;
+    if(noData.length) hmsg += `⚠ ${noData.join(', ')} — connected but no data / ချိတ်ပြီး ဒေတာမရ (check cable / ကေဘယ် စစ်ပါ). `;
+    hb.textContent = hmsg;
+    hb.style.display = hmsg ? 'block' : 'none';
+
+    // verification status buttons (shift check / lot-end / model change), coloured by result.
+    // Green counts only for the CURRENT shift — completions from a previous shift reset to grey so each
+    // shift requires its own check.
+    const fmtT = iso => { const t=new Date(iso); return fmt2(t.getHours())+':'+fmt2(t.getMinutes()); };
+    const vbtn = (label, comp, mode) => {
+      let cls='vbtn', sub='not done this shift';
+      if(v.active && v.activeMode===mode){ cls='vbtn amber'; sub='🔄 in progress…'; }
+      else if(comp && comp.shiftKey===v.currentShiftKey){ cls='vbtn green'; sub='✅ done &amp; passed · '+(comp.model||'')+' · '+fmtT(comp.at); }
+      else if(comp){ sub='last done '+fmtT(comp.at)+' (prev shift)'; }
+      return `<div class="${cls}"><div class="t">${label}</div><div class="s">${sub}</div></div>`;
+    };
+    document.getElementById('verifyBtns').innerHTML =
+      vbtn('Shift check', v.shiftScan, 'ShiftChange') +
+      vbtn('Lot-end check', v.lotEnd, 'LotEnd') +
+      vbtn('Model change', v.modelChange, 'ModelChange');
+    const mc = document.getElementById('machines'); mc.innerHTML='';
+    for(const m of s.machines){
+      const cls = !m.portOpen ? 'idle' : (m.online ? 'on' : '');
+      const stTxt = !m.portOpen ? 'no port' : (m.online ? 'online' : 'connected');
+      const rate = m.boardsPerHour==null ? '—' : m.boardsPerHour;
+      const btn = m.online ? 'Re-enable' : 'Go online';
+      mc.insertAdjacentHTML('beforeend',
+        `<div class="m"><div class="name">Machine ${m.machine}</div>
+         <div class="st"><span class="dot ${cls}"></span>${stTxt} · ${m.port}</div>
+         <div class="rate">${rate}<small> boards/h</small></div>
+         <button onclick="reconnect(${m.machine})">↻ ${btn}</button></div>`);
+    }
+
+    // per-feeder exhaust forecast — clean top-N list; a reel change flashes "Change OK" for 10s then drops.
+    try{
+      const ex = await (await fetch('/api/exhaust')).json();
+      const rows = ex.rows||[];
+      const now = Date.now();
+      // detect reel changes: a feeder's remaining jumps UP. Suppress mass re-baselines (restart/check)
+      // where several jump at once — only a real reel change moves one or two.
+      const jumps = [];
+      for(const r of rows){
+        const k = r.machine+'-'+r.feeder, prev = exPrev[k];
+        if(prev!=null && (r.remaining - prev) > 500) jumps.push({k, r});
+        exPrev[k] = r.remaining;
+      }
+      if(jumps.length>0 && jumps.length<=2)
+        for(const j of jumps) exChanged[j.k] = {until:now+10000, machine:j.r.machine, feeder:j.r.feeder, part:j.r.part};
+      for(const k in exChanged) if(exChanged[k].until<=now) delete exChanged[k];
+
+      const exd = document.getElementById('exhaust');
+      document.getElementById('exhEmpty').style.display = (rows.length||Object.keys(exChanged).length)?'none':'block';
+      const shown = new Set();
+      let html = '';
+      for(const k in exChanged){
+        const c = exChanged[k]; shown.add(k);
+        html += `<div class="exrow change"><div class="rnk">✓</div>
+          <div><div class="loc">Machine/စက် ${c.machine} · Feeder/ဖီဒါ ${c.feeder}</div><div class="prt">${c.part}</div></div>
+          <div class="r"><div class="okmsg">✅ Change OK / လဲပြီး</div><div class="q">reel replaced / ရီးလ်လဲပြီး</div></div></div>`;
+      }
+      let n=0;
+      for(const r of rows){
+        const k = r.machine+'-'+r.feeder;
+        if(shown.has(k)) continue;
+        if(n>=TOP_N) break;
+        n++;
+        const cls = r.minutes==null?'na':(r.minutes<RED?'red':(r.minutes<AMBER?'amber':'ok'));
+        html += `<div class="exrow ${cls==='na'?'':cls}"><div class="rnk">${n}</div>
+          <div><div class="loc">Machine/စက် ${r.machine} · Feeder/ဖီဒါ ${r.feeder}</div><div class="prt">${r.part}</div></div>
+          <div class="r"><div class="tm ${cls}">${r.timeLeft}</div><div class="q">${Number(r.remaining).toLocaleString()} pcs/ကျန် · ${r.runsOut}</div></div></div>`;
+      }
+      exd.innerHTML = html;
+      const more = Math.max(0, rows.length - n);
+      document.getElementById('exhHint').textContent = rows.length? (`next ${n} of ${rows.length}${more?` · +${more} more`:''}`):'';
+    }catch(e){}
+
+    // staged reels — issued for the lot but NOT yet loaded on a machine (the forecast can't show these)
+    try{
+      const sg = await (await fetch('/api/staged')).json();
+      const card = document.getElementById('stagedCard');
+      const parts = sg.parts||[];
+      if(!parts.length){ card.style.display='none'; }
+      else{
+        card.style.display='block';
+        document.getElementById('stagedHint').textContent =
+          `${sg.stagedReels} reel${sg.stagedReels>1?'s':''} · ${Number(sg.stagedQty).toLocaleString()} pcs waiting`;
+        document.getElementById('staged').innerHTML = parts.map(p=>{
+          const uids = p.uids.map(u=>`${u.uid} (${Number(u.qty).toLocaleString()})`).join(' · ');
+          return `<div class="exrow"><div class="rnk">${p.reels}×</div>
+            <div><div class="prt">${p.part}</div><div class="loc">${uids}</div></div>
+            <div class="r"><div class="q">${Number(p.qty).toLocaleString()} pcs</div></div></div>`;
+        }).join('');
+      }
+    }catch(e){}
+
+    const ev = await (await fetch('/api/events')).json();
+    const evDiv = document.getElementById('events'); evDiv.innerHTML='';
+    document.getElementById('noEvents').style.display = ev.length? 'none':'block';
+    ev.slice(0,12).forEach(e=>{
+      const t = new Date(e.at);
+      evDiv.insertAdjacentHTML('beforeend',
+        `<div class="ev"><span class="t">${fmt2(t.getHours())}:${fmt2(t.getMinutes())}:${fmt2(t.getSeconds())}</span>
+         <span class="badge">PARTS OUT</span> Machine ${e.machine} · feeder ${e.feeder}</div>`);
+    });
+
+    const f = await (await fetch('/api/forecast?top=10')).json();
+    const tb = document.getElementById('forecast'); tb.innerHTML='';
+    document.getElementById('emptyMsg').style.display = f.length? 'none':'block';
+    f.forEach((r,i)=>{
+      const mins = minutesFromTimeLeft(r.timeLeft);
+      tb.insertAdjacentHTML('beforeend',
+        `<tr><td>${i+1}</td><td>${r.partNumber}</td>
+         <td><span class="chip ${chipClass(mins)}">${r.timeLeft}</span></td>
+         <td>${r.runsOut}</td><td>${r.remaining}</td>
+         <td style="color:var(--mut)">${(r.locations||[]).join('  ')}</td></tr>`);
+    });
+  }catch(e){ /* transient */ }
+}
+refresh(); setInterval(refresh, 3000);
+
+// Password-protected shutdown — a clean stop releases the serial (COM) ports for test software.
+document.getElementById('shutdownBtn').onclick = async () => {
+  const pw = prompt('Enter the password to SHUT DOWN PVS on this line.\nThis stops monitoring and FREES the serial (COM) ports.\nPVS comes back on the next reboot.');
+  if (pw === null || pw === '') return;
+  try {
+    const r = await fetch('/api/shutdown', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: pw }) });
+    const j = await r.json();
+    alert(j.message || (j.ok ? 'Shutting down…' : 'Failed.'));
+  } catch (e) { alert('Shutdown request failed (the app may already be stopping): ' + e); }
+};
+</script>
+</body>
+</html>

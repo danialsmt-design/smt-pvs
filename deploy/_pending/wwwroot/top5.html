@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<title>Next to run out — Line 1</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--amber:#E0A93B;--red:#D9635A}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.3 "Segoe UI",Calibri,Arial,sans-serif;overflow:hidden}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--ln)}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.02em}
+  header .sub{color:var(--mut);font-size:13px}
+  header .clock{margin-left:auto;font-variant-numeric:tabular-nums;font-size:18px;font-weight:700;color:var(--mut)}
+  main{padding:10px 12px;display:flex;flex-direction:column;gap:8px;height:calc(100% - 46px)}
+  .row{flex:1;display:grid;grid-template-columns:44px 1fr auto;align-items:center;gap:14px;
+       background:var(--pan);border:1px solid var(--ln);border-left:8px solid var(--mut);border-radius:12px;padding:10px 16px;min-height:0}
+  .row.red{border-left-color:var(--red)} .row.amber{border-left-color:var(--amber)} .row.ok{border-left-color:var(--ok)}
+  .rank{font-size:26px;font-weight:800;color:var(--mut);text-align:center}
+  .mid .loc{font-size:15px;color:var(--mut);font-weight:600}
+  .mid .part{font-size:30px;font-weight:800;font-family:Consolas,"Segoe UI",monospace;line-height:1.05;margin-top:1px;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mid .qty{font-size:15px;color:var(--mut);margin-top:2px}
+  .right{text-align:right;white-space:nowrap}
+  .right .time{font-size:30px;font-weight:800}
+  .right .time.red{color:var(--red)} .right .time.amber{color:var(--amber)} .right .time.ok{color:var(--ok)} .right .time.na{color:var(--mut)}
+  .right .runs{font-size:14px;color:var(--mut);margin-top:2px}
+  .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:18px;
+         border:1px dashed var(--ln);border-radius:12px;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>⏱ Next to run out / နောက်ကုန်မည့်ပစ္စည်း</h1>
+  <span class="sub" id="sub">Line 1</span>
+  <span class="clock" id="clock">--:--:--</span>
+</header>
+<main id="list"></main>
+<script>
+const RED=45, AMBER=120;
+const f2=n=>String(n).padStart(2,'0');
+function tick(){ const d=new Date(); document.getElementById('clock').textContent=`${f2(d.getHours())}:${f2(d.getMinutes())}:${f2(d.getSeconds())}`; }
+setInterval(tick,1000); tick();
+
+async function load(){
+  let ex, st;
+  try{
+    [ex, st] = await Promise.all([
+      (await fetch('/api/exhaust')).json(),
+      (await fetch('/api/status')).json().catch(()=>({}))
+    ]);
+  }catch(e){ return; }
+
+  const v = (st&&st.verify)||{};
+  document.getElementById('sub').textContent =
+    (st&&st.line?st.line:'Line') + (st&&st.lineId?(' · line '+st.lineId):'') + (v.currentShift?(' · '+v.currentShift+' shift'):'');
+
+  const rows = (ex.rows||[]).slice(0,5);
+  const el = document.getElementById('list');
+  if(!rows.length){
+    el.innerHTML = `<div class="empty">No tracked reels yet — run a shift or model-change check.<br>ရီးလ်မှတ်တမ်းမရှိသေး — ဆစ်ဖ်ပြောင်း သို့ မော်ဒယ်ပြောင်း စစ်ဆေးပါ.</div>`;
+    return;
+  }
+  el.innerHTML = rows.map((r,i)=>{
+    const cls = r.minutes==null?'na':(r.minutes<RED?'red':(r.minutes<AMBER?'amber':'ok'));
+    const rowCls = cls==='na'?'':cls;
+    return `<div class="row ${rowCls}">
+      <div class="rank">${i+1}</div>
+      <div class="mid">
+        <div class="loc">Machine/စက် ${r.machine} · Feeder/ဖီဒါ ${r.feeder}</div>
+        <div class="part">${r.part}</div>
+        <div class="qty">${Number(r.remaining).toLocaleString()} pcs left / ကျန် · ${r.perBoard}/panel</div>
+      </div>
+      <div class="right">
+        <div class="time ${cls}">${r.timeLeft}</div>
+        <div class="runs">${r.runsOut}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+load(); setInterval(load, 4000);
+</script>
+</body>
+</html>

@@ -75,6 +75,8 @@
       <select id="sideSel"><option value="A">A Side</option><option value="B">B Side</option></select>
       <button class="pri" onclick="selectModel()" title="Supervisor pins the running model (badge required); PVS verifies it against the machine">Set model</button>
       <button id="autoBtn" onclick="returnToAuto()" title="Release the pin — follow the machine automatically" style="display:none">↩ Auto</button>
+      <button id="modelCancel" onclick="cancelModelPick()" title="Discard the pick and show what PVS is running" style="display:none">✕ Cancel pick</button>
+      <button onclick="setNonCanon()" title="This line is running a NON-Canon model PVS doesn't track — park tracking, keep machine pickup data by feeder position">▣ Non-Canon</button>
       <button onclick="reloadDb()" title="Re-pull models and this model's feeder list from the parts-control PC">↻ Refresh from DB</button>
       <span class="muted" id="modelMsg"></span>
     </div>
@@ -82,7 +84,10 @@
 
   <div class="card" id="lotSelCard">
     <h2>🎯 Running lot</h2>
-    <select id="lotSel" onchange="selectLot()"></select>
+    <div class="row" style="gap:8px">
+      <select id="lotSel" style="flex:1;width:auto"></select>
+      <button class="pri" onclick="selectLot()" title="Supervisor pins the running lot (badge required)">Set lot</button>
+    </div>
     <div class="row" style="margin-top:12px;gap:6px">
       <span class="seclbl">Boards done</span>
       <input id="lotProduced" type="number" min="0" placeholder="produced boards" inputmode="numeric" style="width:150px">
@@ -93,6 +98,57 @@
     </div>
     <div id="lotSelMsg"></div>
   </div>
+
+  <div class="card" id="standbyCard">
+    <h2>📦 Standby reel check <span class="sub">verify spares on the rack</span></h2>
+    <p class="muted" style="margin:2px 0 12px;font-size:13px;line-height:1.5">
+      Scan every standby (spare) reel physically on the line rack. <b style="color:#5fd08a">✓</b> = confirmed present.
+      When you've scanned them all, any reel still un-ticked is a <b>phantom</b> — the system holds it as a spare but
+      it isn't on the rack (usually an old empty never scanned back); report those to your supervisor to zero. A reel
+      that's actually loaded on a machine, or one from another line, is flagged as you scan it.
+    </p>
+    <div class="row" style="gap:10px;align-items:center">
+      <input id="standbyScan" placeholder="scan a standby reel…" autocomplete="off"
+        style="flex:1;min-width:180px;padding:8px 10px;background:#0c130f;border:1px solid var(--ln);border-radius:8px;color:inherit">
+      <button onclick="standbyReset()" title="Start a fresh standby check">↻ Restart</button>
+    </div>
+    <div id="standbyMsg" class="muted" style="margin:8px 0;min-height:18px"></div>
+    <div id="standbySummary" style="margin:6px 0;font-weight:600"></div>
+    <div id="standbyRows" class="muted">—</div>
+  </div>
+
+  <div class="card" id="manualCard">
+    <h2>🔧 Manual feeder lists <span class="sub">breakdown / reshuffle</span></h2>
+    <p class="muted" style="margin:2px 0 12px;font-size:13px;line-height:1.5">
+      When a machine is down and its feeders are shared across the running cells, load each machine's exported
+      feeder-list CSV from the pen drive (Sony or JUKI export). PVS verifies against these files instead of the DB
+      until you reload. Load a file for <b>every running machine</b> — the loaded total must match the Canon BOM part count.
+      <b>You decide</b> which machine a file goes to, and <b>Skip</b> any cell that is not running this lot — a skipped
+      machine's feeders drop out of the check until you put it back.
+    </p>
+    <div id="manualRows"></div>
+    <div class="row" style="margin-top:12px;align-items:center;gap:14px">
+      <span id="manualTotal" class="seclbl">—</span>
+      <button onclick="clearManual()" title="Discard all pen-drive feeder lists and go back to the DB ProductBOM">↻ Reload from DB</button>
+      <span class="muted" id="manualMsg"></span>
+    </div>
+    <input type="file" id="manualFile" accept=".csv,.CSV,text/csv" style="display:none">
+  </div>
+
+  <div class="card" id="serialCard">
+    <h2>🔌 Serial COM test <span class="sub">machine link health</span></h2>
+    <p class="muted" style="margin:2px 0 12px;font-size:13px;line-height:1.5">
+      Live per-machine serial check — is each mounter's COM port open and answering.
+      <b>PASS</b> = port open, online, receiving. <b>FAIL</b> = port not open / no answer.
+      <b>STALE</b> = open but no message in 10&nbsp;min (check cabling, or the machine is parked).
+      JUKI manual machines have no serial port.
+    </p>
+    <div id="serialRows" class="muted">Loading…</div>
+    <div class="row" style="margin-top:12px;align-items:center;gap:14px">
+      <button onclick="testSerial(true)" title="Send C3P to every machine and re-check its serial COM link now">↻ Test serial</button>
+      <span class="muted" id="serialMsg"></span>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -100,20 +156,103 @@ const $ = id => document.getElementById(id);
 let _state = {mode:'None'};
 async function api(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return r.json(); }
 
+// Serial COM test card — uses the existing /api/status (no dedicated endpoint / build needed). The "Test serial"
+// button first sends C3P (wakes a silent-but-alive machine) then reads status; the 15s auto-refresh is passive.
+// Verdicts are computed client-side.
+function _serColor(v){ return v.startsWith('PASS')?'#5fd08a':(v.startsWith('FAIL')?'#e5544b':(v.startsWith('STALE')?'#e8a13a':'#8a97a0')); }
+function _serAge(s){ return s==null?'never':(s<90?s+'s':(s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h')); }
+async function testSerial(active){
+  $('serialMsg').textContent = active ? 'sending C3P…' : '…';
+  try{
+    if(active){ try{ await api('/api/programs/query'); await new Promise(r=>setTimeout(r,1500)); }catch(e){} }
+    const d = await (await fetch('/api/status')).json();
+    const now = Date.now(); const failing = [];
+    const ms = (d.machines||[]).map(m=>{
+      const ageSec = m.lastAt ? Math.round((now - new Date(m.lastAt).getTime())/1000) : null;
+      const manual = !m.port; let verdict;
+      if(manual)                          verdict='n/a (manual)';
+      else if(m.skipped)                  verdict='skipped';
+      else if(!m.portOpen)                verdict='FAIL — port not open';
+      else if(!m.online)                  verdict='FAIL — no answer';
+      else if(ageSec!=null && ageSec>600) verdict='STALE — '+Math.round(ageSec/60)+'m';
+      else                                verdict='PASS';
+      if(verdict.startsWith('FAIL')||verdict.startsWith('STALE')) failing.push('M'+m.machine+(m.port?('·'+m.port):''));
+      return {machine:m.machine, port:m.port, messages:m.messages, ageSec, verdict};
+    });
+    const rows = ms.map(m=>`<tr>
+        <td style="padding:3px 8px 3px 0">M${m.machine}</td>
+        <td style="padding:3px 8px 3px 0">${m.port||'—'}</td>
+        <td style="padding:3px 8px 3px 0">${m.messages}</td>
+        <td style="padding:3px 8px 3px 0">${_serAge(m.ageSec)}</td>
+        <td style="padding:3px 0;color:${_serColor(m.verdict)};font-weight:600">${m.verdict}</td></tr>`).join('');
+    $('serialRows').innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:#8a97a0"><th style="padding-right:8px">Mc</th><th style="padding-right:8px">COM</th><th style="padding-right:8px">msgs</th><th style="padding-right:8px">last</th><th>verdict</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+    $('serialMsg').innerHTML = failing.length===0 ? '<b style="color:#5fd08a">All serial links OK.</b>'
+      : `<b style="color:#e5544b">Problem: ${failing.join(', ')}</b>`;
+  }catch(e){ $('serialMsg').textContent='Serial test failed: '+e; }
+}
+testSerial(false); setInterval(()=>testSerial(false), 15000);
+
+// Standby reel check — operator scans spares on the rack; PVS shows confirmed vs phantom (un-ticked) vs unexpected.
+async function standbyLoad(){
+  try{
+    const d = await (await fetch('/api/standby/state')).json();
+    $('standbySummary').innerHTML =
+      `<span style="color:#5fd08a">${d.confirmed} confirmed</span> · `+
+      `<span style="color:#e8a13a">${d.pending} not scanned</span> · ${d.believedCount} in system`+
+      (d.unexpectedCount ? ` · <span style="color:#e5544b">${d.unexpectedCount} unexpected</span>` : ``);
+    const rows = (d.rows||[]).map(r=>`<tr>
+        <td style="padding:2px 10px 2px 0">${r.confirmed?'<span style="color:#5fd08a">✓</span>':'<span style="color:#e8a13a">·</span>'}</td>
+        <td style="padding:2px 10px 2px 0">${r.part}</td>
+        <td style="padding:2px 10px 2px 0">${r.uid}</td>
+        <td style="padding:2px 0">${r.qty}</td></tr>`).join('');
+    const u = (d.unexpected&&d.unexpected.length) ? `<div style="margin-top:8px;color:#e5544b">Unexpected (scanned, not a known standby): ${d.unexpected.join(', ')}</div>` : '';
+    $('standbyRows').innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:#8a97a0"><th></th><th style="padding-right:10px">Part</th><th style="padding-right:10px">UID</th><th>qty</th></tr></thead>
+      <tbody>${rows}</tbody></table>` + u;
+  }catch(e){ $('standbyRows').textContent='load failed: '+e; }
+}
+async function standbyReset(){ await api('/api/standby/reset'); $('standbyMsg').textContent=''; standbyLoad(); }
+async function standbyScanSubmit(uid){
+  if(!uid || !uid.trim()) return;
+  const r = await api('/api/standby/scan', {value: uid.trim()});
+  $('standbyMsg').innerHTML = `<span style="color:${r.kind==='confirmed'?'#5fd08a':(r.kind==='loaded'?'#e8a13a':'#e5544b')}">${r.message||''}</span>`;
+  standbyLoad();
+}
+(function(){ const el=$('standbyScan'); if(el){ el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ const v=el.value; el.value=''; standbyScanSubmit(v); } }); } standbyLoad(); setInterval(standbyLoad, 8000); })();
+
 async function loadModels(){
   const m = await (await fetch('/api/models')).json();
   const sel = $('modelSel');
   m.forEach(p => sel.insertAdjacentHTML('beforeend', `<option value="${p.productId}">${p.name}</option>`));
   if(!m.length) $('modelMsg').textContent = 'No models — DB not connected yet.';
 }
+// The 3s poll used to rewrite these dropdowns from the running model, so a pick the supervisor had not pressed
+// "Set model" on yet snapped straight back (focus is lost as soon as you touch an option on the panel). Once the
+// supervisor changes either dropdown it is THEIRS until they Set it, return to auto, or press Cancel.
+let modelDirty=false;
+function markModelDirty(){
+  modelDirty = true;
+  $('modelMsg').innerHTML='<b style="color:var(--warn,#e8a13a)">Not applied yet — press “Set model”.</b>';
+  $('modelCancel').style.display='';
+}
+function clearModelDirty(){ modelDirty=false; $('modelCancel').style.display='none'; }
+$('modelSel').addEventListener('change', markModelDirty);
+$('sideSel').addEventListener('change', markModelDirty);
+// Drop the pending pick and go back to showing what PVS is actually running.
+function cancelModelPick(){ clearModelDirty(); $('modelMsg').textContent='Pick discarded.'; pollModel(); }
 // Supervisor pins the running model. Badge-gated (L2+); PVS verifies against the machine once online.
 async function selectModel(){
   const id=$('modelSel').value; if(!id) return;
   const side=$('sideSel').value; const name=$('modelSel').selectedOptions[0].text;
   const badge=prompt('SUPERVISOR: scan your badge to set the running model to\n'+name+' · '+side+' side');
-  if(!badge||!badge.trim()){ $('modelMsg').textContent='Cancelled — model unchanged.'; return; }
+  if(!badge||!badge.trim()){ $('modelMsg').textContent='Cancelled — model unchanged (your pick is kept, press “Set model” to apply).'; return; }
   $('modelMsg').textContent='…';
   const res=await api('/api/model/manual',{productId:+id,side,badge:badge.trim()});
+  // Keep the pick on screen if the server refused it (bad badge, check in progress, no feeder map) — only a
+  // confirmed pin clears it.
+  if(/pinned by/i.test(res.message||'')) clearModelDirty();
   $('modelMsg').textContent=res.message; pollModel();
 }
 async function returnToAuto(){
@@ -121,6 +260,16 @@ async function returnToAuto(){
   if(!badge||!badge.trim()) return;
   $('modelMsg').textContent='…';
   const res=await api('/api/model/auto',{badge:badge.trim()});
+  clearModelDirty();
+  $('modelMsg').textContent=res.message; pollModel();
+}
+// Supervisor parks the line as a NON-Canon model: PVS tracking stands down, machine pickup data stays.
+async function setNonCanon(){
+  const badge=prompt('SUPERVISOR: scan your badge to mark this line as running a NON-CANON model.\nPVS parts/lot tracking pauses; the machine pickup data still shows by feeder position.');
+  if(!badge||!badge.trim()) return;
+  $('modelMsg').textContent='…';
+  const res=await api('/api/model/noncanon',{badge:badge.trim()});
+  clearModelDirty();
   $('modelMsg').textContent=res.message; pollModel();
 }
 // Supervisor force-ends the running lot (finalises the count, clears it for the next lot). Badge-gated (L2+).
@@ -143,6 +292,11 @@ async function pollModel(){
   try{ _state = await (await fetch('/api/session')).json(); }catch(e){}
   try{
     const cm = await (await fetch('/api/currentmodel')).json();
+    if(cm.nonCanon){
+      $('autoModel').innerHTML='▣ <b style="color:var(--acc)">Running NON-CANON model — PVS tracking paused</b> <span class="muted">(machine pickup data still shows by feeder position; press ↩ Auto to return to a Canon model)</span>';
+      $('autoBtn').style.display='';
+      return;
+    }
     if(cm.model){
       $('model').textContent = cm.model+' · '+cm.side+' side'+(cm.auto?' · auto':(cm.manual?' · set':''));
       if(cm.manual){
@@ -155,7 +309,7 @@ async function pollModel(){
       }
       $('autoBtn').style.display = cm.manual ? '' : 'none';
       const af=document.activeElement;
-      if(af!==$('modelSel') && af!==$('sideSel')){ if(cm.productId) $('modelSel').value=cm.productId; $('sideSel').value=cm.side; }
+      if(!modelDirty && af!==$('modelSel') && af!==$('sideSel')){ if(cm.productId) $('modelSel').value=cm.productId; $('sideSel').value=cm.side; }
     } else { $('autoModel').textContent='No running model detected yet — set it below.'; $('autoBtn').style.display='none'; }
   }catch(e){}
 }
@@ -168,15 +322,17 @@ async function loadLotOptions(){
     const sel=$('lotSel');
     let opts=(d.options||[]).slice();
     if(d.selected && !opts.some(o=>o.lotNo===d.selected)) opts.unshift({lotNo:d.selected,target:null,deliveryDate:null});
-    const sig=(d.selected||'')+'|'+opts.map(o=>o.lotNo+':'+o.target+':'+(o.deliveryDate||'')).join(',');
-    if(sig!==lotOptsSig){ lotOptsSig=sig; sel.innerHTML=opts.map(o=>`<option value="${o.lotNo}">${o.lotNo}${o.target!=null?(' — '+o.target+' pcs'):''}${o.deliveryDate?(' · '+o.deliveryDate):''}</option>`).join(''); }
-    if(d.selected) sel.value=d.selected;
-    $('lotSelMsg').textContent = d.manual ? 'manual pick' : 'auto (current running lot)';
+    const ph = !d.selected;   // no lot set -> show a placeholder so a pick is deliberate (then press Set lot)
+    const sig=(d.selected||'')+'|'+(ph?'PH|':'')+opts.map(o=>o.lotNo+':'+o.target+':'+(o.deliveryDate||'')).join(',');
+    if(sig!==lotOptsSig){ lotOptsSig=sig; sel.innerHTML=(ph?'<option value="">— pick a lot —</option>':'')+opts.map(o=>`<option value="${o.lotNo}">${o.lotNo}${o.target!=null?(' — '+o.target+' pcs'):''}${o.deliveryDate?(' · '+o.deliveryDate):''}</option>`).join(''); }
+    sel.value = d.selected || '';
+    $('lotSelMsg').textContent = d.selected ? (d.manual ? 'manual pick' : 'auto (current running lot)') : 'no lot set — pick one and press “Set lot”';
   }catch(e){}
 }
 async function selectLot(){
   const lot=$('lotSel').value;
-  const badge=prompt('SUPERVISOR: scan your badge to change the running lot to\n'+lot);
+  if(!lot){ $('lotSelMsg').textContent='Pick a lot from the list first, then press “Set lot”.'; return; }
+  const badge=prompt('SUPERVISOR: scan your badge to set the running lot to\n'+lot);
   if(!badge||!badge.trim()){ lotOptsSig=''; loadLotOptions(); return; }
   $('lotSelMsg').textContent='…';
   try{ const r=await api('/api/lot/select',{lotNo:lot,badge:badge.trim()}); $('lotSelMsg').textContent=r.message||''; }catch(e){}
@@ -194,8 +350,76 @@ async function setProduced(){
   try{ const r=await api('/api/lot/select',{lotNo:lot,badge:badge.trim(),produced:n}); $('lotSelMsg').textContent=r.message||''; }catch(e){}
   $('lotProduced').value=''; lotOptsSig=''; loadLotOptions();
 }
-loadModels(); pollModel(); loadLotOptions();
-setInterval(()=>{ pollModel(); loadLotOptions(); }, 3000);
+// ---- manual feeder lists (pen-drive CSV per machine, for a breakdown reshuffle) ----
+let _pickMachine=null;
+// A loud, colour-coded result line so the supervisor always sees WHAT happened (loaded / rejected / why).
+function mmsg(text){
+  const el=$('manualMsg'); const t=text||'';
+  const ok  = /loaded\s+\d+\s+feeder|back in the line|reloaded from the DB|SKIPPED/i.test(t);
+  const err = /No feeders|Scan a SUPERVISOR|out of range|CELL-MISMATCH|not on this line|Cancelled|failed/i.test(t);
+  el.innerHTML = (ok?'✅ ':err?'⛔ ':'') + t.replace(/</g,'&lt;');
+  el.style.color = ok?'var(--ok)' : err?'var(--red,#e36b60)' : 'var(--mut)';
+  el.style.fontWeight = (ok||err)?'700':'400';
+  el.style.fontSize = (ok||err)?'14px':'13px';
+}
+$('manualFile').addEventListener('change', async e=>{
+  const f=e.target.files[0]; e.target.value=''; if(!f||_pickMachine==null) return;
+  const csv=await f.text();
+  const m=_pickMachine;
+  const badge=prompt('SUPERVISOR: scan your badge to load\n'+f.name+'\ninto Machine '+m);
+  if(!badge||!badge.trim()){ mmsg('Cancelled.'); return; }
+  mmsg('…');
+  let r=await api('/api/feeders/manual',{machine:m,csv,badge:badge.trim()});
+  // The file's own cell doesn't match the machine you picked — that IS a reshuffle, so it's your call.
+  if((r.message||'').startsWith('CELL-MISMATCH:')){
+    const ok=confirm(r.message.replace('CELL-MISMATCH: ','')+'\n\nLoad it into Machine '+m+' anyway?');
+    if(!ok){ mmsg('Cancelled — pick another file or another machine.'); return; }
+    r=await api('/api/feeders/manual',{machine:m,csv,badge:badge.trim(),force:true});
+  }
+  mmsg(r.message||''); manualSig=''; loadManual();
+});
+function pickFor(m){ _pickMachine=m; $('manualFile').click(); }
+// Supervisor takes a machine out of this lot's run (or puts it back).
+async function skipMachine(m,skip){
+  const badge=prompt('SUPERVISOR: scan your badge to '+(skip?('SKIP Machine '+m+' — its feeders leave the check'):('put Machine '+m+' back in the line')));
+  if(!badge||!badge.trim()) return;
+  mmsg('…');
+  const r=await api('/api/feeders/manual/skip',{machine:m,skip,badge:badge.trim()});
+  mmsg(r.message||''); manualSig=''; loadManual();
+}
+async function clearManual(){
+  const badge=prompt('SUPERVISOR: scan your badge to DISCARD all pen-drive feeder lists and reload from the DB.');
+  if(!badge||!badge.trim()) return;
+  mmsg('…');
+  const r=await api('/api/feeders/manual/clear',{badge:badge.trim()});
+  mmsg(r.message||''); manualSig=''; loadManual();
+}
+let manualSig='';
+async function loadManual(){
+  try{
+    const d=await (await fetch('/api/feeders/manual/status')).json();
+    const sig=JSON.stringify(d); if(sig===manualSig) return; manualSig=sig;
+    $('manualRows').innerHTML=(d.machines||[]).map(m=>{
+      const tag = m.skipped ? '<b style="color:var(--warn,#e8a13a)">SKIPPED</b> <span class="muted">— not running this lot</span>'
+        : m.loaded ? ('✅ <b>'+m.feeders+'</b> feeders'+(m.label?(' · '+m.label):''))
+        : ('<span class="muted">not loaded — using DB'+(m.onLine?'':' · not in this line\'s config')+'</span>');
+      const skipBtn = m.skipped
+        ? `<button onclick="skipMachine(${m.machine},false)" title="Put this machine back in the line">↩ Put back</button>`
+        : `<button onclick="skipMachine(${m.machine},true)" title="This machine is not running this lot — drop its feeders from the check">⃠ Skip</button>`;
+      return `<div class="row" style="margin:6px 0;align-items:center;gap:10px${m.skipped?';opacity:.65':''}">
+        <button onclick="pickFor(${m.machine})" style="min-width:150px">📂 Load MC${m.machine}${m.manualCell?' (manual)':''}…</button>
+        ${skipBtn}
+        <span>${tag}</span></div>`;
+    }).join('');
+    const skips=(d.skipped||[]);
+    $('manualTotal').textContent = (d.active ? ('Loaded total: '+d.loadedTotal+' feeders — must match Canon BOM')
+                                            : 'Using DB feeder lists (no pen-drive override)')
+      + (skips.length ? ('  ·  Skipped: MC'+skips.join(', MC')) : '');
+    $('manualCard').style.outline = d.active ? '2px solid var(--warn,#e8a13a)' : 'none';
+  }catch(e){}
+}
+loadModels(); pollModel(); loadLotOptions(); loadManual();
+setInterval(()=>{ pollModel(); loadLotOptions(); loadManual(); }, 3000);
 </script>
 </body>
 </html>

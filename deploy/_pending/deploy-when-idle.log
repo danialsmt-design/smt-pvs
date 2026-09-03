@@ -1,0 +1,184 @@
+﻿08-11 23:18:23  ARMED: watching 4 lines; need 5 consecutive zero-rate polls (50s apart) then deploy from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending
+08-12 01:28:10  LINE1PVS: unreachable
+08-12 03:29:54  LINE1PVS: unreachable
+08-12 03:30:52  LINE1PVS: unreachable
+08-12 03:31:50  LINE1PVS: unreachable
+08-12 03:32:41  LINE1PVS: idle read 1/5 (online=4 rate=0 mode=ShiftChange)
+08-12 03:33:31  LINE1PVS: idle read 2/5 (online=4 rate=0 mode=ShiftChange)
+08-12 03:34:21  LINE1PVS: idle read 3/5 (online=4 rate=0 mode=ShiftChange)
+08-12 03:35:11  LINE1PVS: idle read 4/5 (online=4 rate=0 mode=ShiftChange)
+08-12 03:36:01  LINE1PVS: idle read 5/5 (online=4 rate=0 mode=ShiftChange)
+08-12 03:36:01  LINE1PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.69.81.105 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-033601)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-033601
+DEPLOY OK: LINE1PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-033601
+08-12 03:36:18  LINE1PVS: DEPLOY DONE
+08-12 06:29:17  LINE2PVS: unreachable
+08-12 06:30:15  LINE2PVS: unreachable
+08-12 06:31:13  LINE2PVS: unreachable
+08-12 06:32:11  LINE2PVS: unreachable
+08-12 06:33:09  LINE2PVS: unreachable
+08-12 06:34:07  LINE2PVS: unreachable
+08-12 06:35:05  LINE2PVS: unreachable
+08-12 06:36:03  LINE2PVS: unreachable
+08-12 06:37:01  LINE2PVS: unreachable
+08-12 06:37:59  LINE2PVS: unreachable
+08-12 06:38:57  LINE2PVS: unreachable
+08-12 06:39:56  LINE2PVS: unreachable
+08-12 06:40:54  LINE2PVS: unreachable
+08-12 06:41:52  LINE2PVS: unreachable
+08-12 06:42:50  LINE2PVS: unreachable
+08-12 06:43:48  LINE2PVS: unreachable
+08-12 06:44:46  LINE2PVS: unreachable
+08-12 06:45:44  LINE2PVS: unreachable
+08-12 06:46:42  LINE2PVS: unreachable
+08-12 06:47:40  LINE2PVS: unreachable
+08-12 06:48:38  LINE2PVS: unreachable
+08-12 06:49:36  LINE2PVS: unreachable
+08-12 06:50:34  LINE2PVS: unreachable
+08-12 06:51:32  LINE2PVS: unreachable
+08-12 06:52:30  LINE2PVS: unreachable
+08-12 06:53:28  LINE2PVS: unreachable
+08-12 06:54:27  LINE2PVS: unreachable
+08-12 06:55:25  LINE2PVS: unreachable
+08-12 06:56:23  LINE2PVS: unreachable
+08-12 06:57:21  LINE2PVS: unreachable
+08-12 06:58:19  LINE2PVS: unreachable
+08-12 06:59:17  LINE2PVS: unreachable
+08-12 07:00:15  LINE2PVS: unreachable
+08-12 07:01:13  LINE2PVS: unreachable
+08-12 07:02:11  LINE2PVS: unreachable
+08-12 07:03:09  LINE2PVS: unreachable
+08-12 07:04:07  LINE2PVS: unreachable
+08-12 07:05:05  LINE2PVS: unreachable
+08-12 07:06:03  LINE2PVS: unreachable
+08-12 07:07:01  LINE2PVS: unreachable
+08-12 07:08:00  LINE2PVS: unreachable
+08-12 07:08:58  LINE2PVS: unreachable
+08-12 07:09:56  LINE2PVS: unreachable
+08-12 07:10:54  LINE2PVS: unreachable
+08-12 07:11:52  LINE2PVS: unreachable
+08-12 07:12:50  LINE2PVS: unreachable
+08-12 07:13:48  LINE2PVS: unreachable
+08-12 07:14:46  LINE2PVS: unreachable
+08-12 07:15:44  LINE2PVS: unreachable
+08-12 07:16:42  LINE2PVS: unreachable
+08-12 07:17:40  LINE2PVS: unreachable
+08-12 07:18:38  LINE2PVS: unreachable
+08-12 07:19:36  LINE2PVS: unreachable
+08-12 07:20:35  LINE2PVS: unreachable
+08-12 07:21:33  LINE2PVS: unreachable
+08-12 07:22:31  LINE2PVS: unreachable
+08-12 07:23:29  LINE2PVS: unreachable
+08-12 07:24:27  LINE2PVS: unreachable
+08-12 07:25:25  LINE2PVS: unreachable
+08-12 07:26:23  LINE2PVS: unreachable
+08-12 07:27:21  LINE2PVS: unreachable
+08-12 07:28:19  LINE2PVS: unreachable
+08-12 07:29:18  LINE2PVS: unreachable
+08-12 07:30:16  LINE2PVS: unreachable
+08-12 07:31:14  LINE2PVS: unreachable
+08-12 07:32:12  LINE2PVS: unreachable
+08-12 07:33:02  LINE2PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 07:33:53  LINE2PVS: idle read 2/5 (online=4 rate=0 mode=ShiftChange)
+08-12 07:34:43  LINE2PVS: idle read 3/5 (online=4 rate=0 mode=ShiftChange)
+08-12 07:35:33  LINE2PVS: idle read 4/5 (online=4 rate=0 mode=ShiftChange)
+08-12 07:36:24  LINE2PVS: idle read 5/5 (online=4 rate=0 mode=ShiftChange)
+08-12 07:36:24  LINE2PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.94.102.44 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-073624)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-073624
+DEPLOY OK: LINE2PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-073624
+08-12 07:36:39  LINE2PVS: DEPLOY DONE
+08-12 07:40:50  LINE3PVS: idle read 1/5 (online=1 rate=0 mode=ShiftChange)
+08-12 07:41:40  LINE3PVS: idle read 2/5 (online=1 rate=0 mode=ShiftChange)
+08-12 07:41:40  LINE5PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 07:42:30  LINE3PVS: idle read 3/5 (online=1 rate=0 mode=ShiftChange)
+08-12 07:42:30  LINE5PVS: idle read 2/5 (online=4 rate=0 mode=None)
+08-12 07:43:20  LINE3PVS: idle read 4/5 (online=1 rate=0 mode=ShiftChange)
+08-12 07:43:20  LINE5PVS: idle read 3/5 (online=4 rate=0 mode=None)
+08-12 07:44:10  LINE3PVS: idle read 5/5 (online=1 rate=0 mode=ShiftChange)
+08-12 07:44:10  LINE3PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.105.64.115 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-074410)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-074410
+DEPLOY OK: LINE3PVS is up, 1/2 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-074410
+08-12 07:44:23  LINE3PVS: DEPLOY DONE
+08-12 07:44:23  LINE5PVS: idle read 4/5 (online=4 rate=0 mode=None)
+08-12 07:45:13  LINE5PVS: idle read 5/5 (online=4 rate=0 mode=None)
+08-12 07:45:13  LINE5PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.101.8.76 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-074513)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-074513
+DEPLOY OK: LINE5PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-074513
+08-12 07:45:28  LINE5PVS: DEPLOY DONE
+08-12 07:45:28  WATCHER EXIT: 0 line(s) still pending: 
+08-12 10:22:34  ARMED: watching 4 lines; need 5 consecutive zero-rate polls (50s apart) then deploy from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending
+08-12 10:22:34  LINE5PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 12:37:08  ARMED: watching 4 lines; need 5 consecutive zero-rate polls (50s apart) then deploy from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending
+08-12 12:37:16  LINE1PVS: unreachable
+08-12 12:37:17  LINE3PVS: idle read 1/5 (online=2 rate=0 mode=None)
+08-12 12:37:17  LINE5PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 12:38:15  LINE1PVS: unreachable
+08-12 12:38:15  LINE3PVS: idle read 2/5 (online=2 rate=0 mode=None)
+08-12 12:38:15  LINE5PVS: idle read 2/5 (online=4 rate=0 mode=None)
+08-12 12:39:05  LINE3PVS: idle read 3/5 (online=2 rate=0 mode=None)
+08-12 12:39:05  LINE5PVS: idle read 3/5 (online=4 rate=0 mode=None)
+08-12 12:39:55  LINE3PVS: idle read 4/5 (online=2 rate=0 mode=None)
+08-12 12:39:55  LINE5PVS: idle read 4/5 (online=4 rate=0 mode=None)
+08-12 12:40:45  LINE3PVS: idle read 5/5 (online=2 rate=0 mode=None)
+08-12 12:40:45  LINE3PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.105.64.115 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-124045)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-124045
+DEPLOY OK: LINE3PVS is up, 2/3 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-124045
+08-12 12:40:58  LINE3PVS: DEPLOY DONE
+08-12 12:40:58  LINE5PVS: idle read 5/5 (online=4 rate=0 mode=None)
+08-12 12:40:58  LINE5PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.101.8.76 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-124058)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-124058
+DEPLOY OK: LINE5PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-124058
+08-12 12:41:11  LINE5PVS: DEPLOY DONE
+08-12 12:42:09  LINE1PVS: unreachable
+08-12 14:05:41  ARMED: watching 3 lines; need 5 consecutive zero-rate polls (50s apart) then deploy from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending
+08-12 14:05:41  LINE5PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 14:06:31  LINE5PVS: idle read 2/5 (online=4 rate=0 mode=None)
+08-12 14:07:21  LINE5PVS: idle read 3/5 (online=4 rate=0 mode=None)
+08-12 14:08:11  LINE5PVS: idle read 4/5 (online=4 rate=0 mode=None)
+08-12 14:09:01  LINE5PVS: idle read 5/5 (online=4 rate=0 mode=None)
+08-12 14:09:01  LINE5PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.101.8.76 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-140902)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-140902
+DEPLOY OK: LINE5PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-140902
+08-12 14:09:16  LINE5PVS: DEPLOY DONE
+08-12 14:19:16  LINE2PVS: idle read 1/5 (online=0 rate=0 mode=ShiftChange)
+08-12 14:20:06  LINE2PVS: idle read 2/5 (online=0 rate=0 mode=ShiftChange)
+08-12 14:20:56  LINE2PVS: idle read 3/5 (online=0 rate=0 mode=ShiftChange)
+08-12 14:21:46  LINE2PVS: idle read 4/5 (online=0 rate=0 mode=ShiftChange)
+08-12 14:22:36  LINE2PVS: idle read 5/5 (online=0 rate=0 mode=ShiftChange)
+08-12 14:22:36  LINE2PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.94.102.44 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-142237)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-142237
+DEPLOY OK: LINE2PVS is up, 0/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-142237
+08-12 14:22:50  LINE2PVS: DEPLOY DONE
+08-12 14:53:03  LINE1PVS: unreachable
+08-12 15:09:01  LINE1PVS: unreachable
+08-12 15:14:09  LINE1PVS: unreachable
+08-12 15:19:18  LINE1PVS: unreachable
+08-12 15:25:18  LINE1PVS: unreachable
+08-12 15:40:22  ARMED: watching 4 lines; need 5 consecutive zero-rate polls (50s apart) then deploy from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending
+08-12 15:40:23  LINE5PVS: idle read 1/5 (online=4 rate=0 mode=None)
+08-12 15:41:13  LINE5PVS: idle read 2/5 (online=4 rate=0 mode=None)
+08-12 15:42:03  LINE5PVS: idle read 3/5 (online=4 rate=0 mode=None)
+08-12 15:42:53  LINE5PVS: idle read 4/5 (online=4 rate=0 mode=None)
+08-12 15:43:43  LINE5PVS: idle read 5/5 (online=4 rate=0 mode=None)
+08-12 15:43:43  LINE5PVS: CONFIRMED STOPPED -> deploying
+Deploying to 100.101.8.76 from C:\Users\Lourdes Gunadasan\Documents\Dantec\PVS\deploy\_pending (backup stamp 
+20260812-154343)
+backed up 3 assemblies to C:\PvsLineApp\_backup\20260812-154343
+DEPLOY OK: LINE5PVS is up, 4/4 machines online. Backup kept at C:\PvsLineApp\_backup\20260812-154343
+08-12 15:43:56  LINE5PVS: DEPLOY DONE

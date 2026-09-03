@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache">
+<title>Daiya Graph — GMS-QP-15F06</title>
+<style>
+  :root{ --ink:#111; --ln:#333; --mut:#666; --hl:#0a6; }
+  *{box-sizing:border-box}
+  body{margin:0;background:#4a4f4c;color:var(--ink);font:13px/1.4 "Segoe UI",Arial,sans-serif}
+  .toolbar{background:#16201b;color:#cfe;padding:8px 14px;display:flex;gap:12px;align-items:center;position:sticky;top:0;z-index:5}
+  .toolbar button,.toolbar a{background:#22302a;border:1px solid #3a4f45;color:#dfe;border-radius:6px;padding:6px 12px;font:13px inherit;cursor:pointer;text-decoration:none}
+  .toolbar .live{margin-left:auto;font-size:12px;color:#9db}
+  .sheet{background:#fff;width:1120px;max-width:98vw;margin:16px auto;padding:14px 16px;border:1px solid #000}
+  table{border-collapse:collapse}
+  .b,.b td,.b th{border:1px solid var(--ln)}
+  .top{display:flex;gap:0;align-items:stretch;border:1px solid #000}
+  .top>div{border-right:1px solid #000;padding:6px 8px}
+  .top>div:last-child{border-right:none}
+  .logo{width:150px;display:flex;align-items:center;justify-content:center;font-weight:800;color:#123;font-size:15px}
+  .title{flex:1;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;letter-spacing:2px}
+  .docbox{width:230px;font-size:11px}
+  .docbox div{display:flex;justify-content:space-between;border-bottom:1px solid #ccc;padding:1px 0}
+  .row2{display:flex;margin-top:8px;gap:8px}
+  .cell{border:1px solid #000;padding:6px 8px;font-size:12px}
+  .cell .k{color:var(--mut);font-size:11px}
+  .cell .v{font-size:16px;font-weight:700;min-height:20px}
+  .lines .on{color:var(--hl);font-weight:800;text-decoration:underline}
+  .appr{display:flex}
+  .appr>div{border:1px solid #000;border-left:none;width:76px;text-align:center;font-size:10px}
+  .appr>div:first-child{border-left:1px solid #000}
+  .appr .h{background:#eee;padding:2px;border-bottom:1px solid #000}
+  .appr .v{height:34px;font-size:14px;font-weight:700;padding-top:6px}
+  .mid{display:flex;gap:8px;margin-top:8px}
+  .fields{border-collapse:collapse;width:520px}
+  .fields td{border:1px solid var(--ln);padding:4px 8px}
+  .fields td.k{background:#f3f3f3;color:#333;width:150px;font-size:12px}
+  .fields td.v{font-size:15px;font-weight:700}
+  .oprs{flex:1}
+  .oprs .lbl{font-size:11px;color:var(--mut);margin-bottom:2px}
+  .oprs .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .oprs .grid .o{border:1px solid var(--ln);padding:4px 6px;min-height:34px}
+  .oprs .grid .o .n{font-size:10px;color:var(--mut)}
+  .oprs .grid .o .nm{font-weight:700}
+  .leadrow{margin-top:6px;border:1px solid var(--ln);padding:4px 8px}
+  .legend{width:330px;border:1px solid #000;font-size:10.5px}
+  .legend .lh{background:#eee;text-align:center;font-weight:700;border-bottom:1px solid #000;padding:2px}
+  .legend table{width:100%}
+  .legend td{border-bottom:1px solid #ddd;padding:1px 5px}
+  .legend td.c{width:20px;text-align:center;font-weight:700;border-left:1px solid #ddd}
+  .legend .grp{background:#f7f7f7;font-weight:700;color:#444}
+  .timeline{margin-top:10px;border:1px solid #000;padding:8px}
+  .tl-scale{display:grid;grid-template-columns:repeat(12,1fr);font-size:10px;color:#333}
+  .tl-scale div{border-left:1px solid #999;padding:2px 3px}
+  .tl-bar{position:relative;height:34px;border:1px solid #999;border-top:none;overflow:hidden}
+  .tl-grid{position:absolute;inset:0;display:grid;grid-template-columns:repeat(12,1fr)}
+  .tl-grid div{border-left:1px solid #ddd}
+  .tl-grid div:first-child{border-left:none}
+  .tl-bar .stop{position:absolute;top:2px;bottom:2px;background:repeating-linear-gradient(45deg,#e88,#e88 3px,#fff 3px,#fff 6px);border:1px solid #c33;font-size:9px;font-weight:800;color:#900;display:flex;align-items:center;justify-content:center;min-width:9px;overflow:hidden;box-sizing:border-box}
+  .tl-lost{font-size:11px;color:#333;margin-top:5px;padding:2px 2px}
+  .tl-lost b{color:#900}
+  .hourly{margin-top:8px}
+  .hourly .hh{font-size:11px;font-weight:700;margin-bottom:2px}
+  .hgrid{display:grid;grid-template-columns:44px repeat(12,1fr);border:1px solid #000}
+  .hgrid div{border-left:1px solid #999;padding:4px 3px;text-align:center;font-size:13px;font-weight:700;min-height:24px}
+  .hgrid .rl{background:#f3f3f3;font-size:11px;color:#333;border-left:none}
+  .hgrid .r2{border-top:1px solid #999}
+  .foot{display:flex;justify-content:flex-end;font-size:10px;color:#555;margin-top:4px}
+  @media print{
+    body{background:#fff} .toolbar{display:none} .sheet{width:auto;margin:0;border:none}
+    @page{size:A4 landscape;margin:8mm}
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button onclick="window.print()">🖨 Print</button>
+  <label style="font-size:12px;color:#9db">Date <input type="date" id="selDate" style="background:#22302a;color:#dfe;border:1px solid #3a4f45;border-radius:6px;padding:5px 8px;font:13px inherit"></label>
+  <label style="font-size:12px;color:#9db">Shift
+    <select id="selShift" style="background:#22302a;color:#dfe;border:1px solid #3a4f45;border-radius:6px;padding:5px 8px;font:13px inherit">
+      <option value="Morning">Morning</option><option value="Night">Night</option>
+    </select>
+  </label>
+  <button onclick="goLive()">● Live (today)</button>
+  <a href="/index.html">← Monitor</a>
+  <span class="live" id="live">—</span>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="top">
+    <div class="logo">GMS</div>
+    <div class="title">DAIYA GRAPH</div>
+    <div class="docbox">
+      <div><span>DOC. NO</span><b>GMS-QP-15F06</b></div>
+      <div><span>PAGE NO</span><b>1 OF 1</b></div>
+      <div><span>EFF DATE</span><b>01-Sep-24</b></div>
+      <div><span>REVISION</span><b>03</b></div>
+    </div>
+  </div>
+
+  <div class="row2">
+    <div class="cell lines" style="width:150px"><div class="k">LINE</div><div class="v" id="fLine">1 / 2 / 3 / 4 / 5</div></div>
+    <div class="cell" style="width:150px"><div class="k">DATE</div><div class="v" id="fDate">—</div></div>
+    <div class="cell" style="width:150px"><div class="k">SHIFT</div><div class="v" id="fShift">—</div></div>
+    <div class="cell" style="width:130px"><div class="k">TARGET / SHIFT</div><div class="v" id="fTgtShift">—</div></div>
+    <div class="cell" style="width:130px"><div class="k">TARGET / HOUR</div><div class="v" id="fTgtHour">—</div></div>
+    <div class="appr">
+      <div><div class="h">PREPARED</div><div class="v" id="fPrep"></div></div>
+      <div><div class="h">CHECKED</div><div class="v"></div></div>
+      <div><div class="h">APPROVED</div><div class="v"></div></div>
+    </div>
+  </div>
+
+  <div class="mid">
+    <table class="fields">
+      <tr><td class="k">MODEL NAME</td><td class="v" id="fModel"></td></tr>
+      <tr><td class="k">PO NO</td><td class="v" id="fPo"></td></tr>
+      <tr><td class="k">LOT SIZE</td><td class="v" id="fLot"></td></tr>
+      <tr><td class="k">BOARD NAME</td><td class="v" id="fBoard"></td></tr>
+      <tr><td class="k">PROD. START TIME</td><td class="v" id="fStart"></td></tr>
+      <tr><td class="k">PROD. END TIME</td><td class="v" id="fEnd"></td></tr>
+      <tr><td class="k">MACHINE COUNTER</td><td class="v" id="fCounter"></td></tr>
+      <tr><td class="k">TOTAL OUTPUT (pcs)</td><td class="v" id="fTotal"></td></tr>
+    </table>
+
+    <div class="oprs">
+      <div class="lbl">MACHINE OPR NAME :</div>
+      <div class="grid" id="fOprs"></div>
+      <div class="leadrow"><span style="font-size:11px;color:#666">LINE LEADER NAME : </span><b id="fLeader"></b></div>
+    </div>
+
+    <div class="legend">
+      <div class="lh">LEGEND</div>
+      <table id="fLegend"></table>
+    </div>
+  </div>
+
+  <div class="timeline">
+    <div class="tl-scale" id="tlScale"></div>
+    <div class="tl-bar" id="tlBar"></div>
+    <div class="tl-lost" id="tlLost"></div>
+  </div>
+
+  <div class="hourly">
+    <div class="hh">Hourly Output <span style="font-weight:400;color:#666">(Note: if line stop, remark &amp; refer to LEGEND)</span></div>
+    <div class="hgrid" id="hPanel"></div>
+    <div class="hgrid r2" id="hPcs"></div>
+  </div>
+
+  <div class="foot">RoHS/REACH Compliance</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function tfmt(iso){ if(!iso) return '—'; const t=new Date(iso); let h=t.getHours(), m=t.getMinutes(); const ap=h<12?'am':'pm'; let hr=h%12; if(hr===0)hr=12; return `${hr}.${String(m).padStart(2,'0')}${ap}`; }
+const SLOTS=[8,9,10,11,12,13,14,15,16,17,18,19];
+function slotLabel(h){ let hr=h%12; if(hr===0)hr=12; return `${hr}.30${h<12?'am':'pm'}`; }
+
+let liveMode = true;   // true = today + current shift (auto-refresh); false = a chosen history date/shift
+function goLive(){ liveMode = true; load(); }
+function pick(){ liveMode = false; load(); }
+
+async function load(){
+  let url = '/api/daiya';
+  if(!liveMode){
+    const q = new URLSearchParams();
+    if($('selDate').value) q.set('date', $('selDate').value);
+    if($('selShift').value) q.set('shift', $('selShift').value);
+    url += '?' + q.toString();
+  }
+  let d; try{ d = await (await fetch(url)).json(); }catch(e){ return; }
+  if(!d.ready){ $('live').textContent='not ready'; return; }
+  // sync the controls to whatever the server resolved (esp. on the first live load)
+  if(liveMode || !$('selDate').value) $('selDate').value = d.date;
+  if(d.shift) $('selShift').value = d.shift;
+  // header
+  $('fLine').innerHTML = [1,2,3,4,5].map(n=>`<span class="${n===d.lineId?'on':''}">${n}</span>`).join(' / ');
+  $('fDate').textContent = d.date||'—';
+  $('fShift').textContent = d.shift||'—';
+  $('fTgtShift').textContent = d.targetShift ?? '—';
+  $('fTgtHour').textContent = d.targetHour ?? '—';
+  $('fModel').textContent = d.model||'—';
+  $('fPo').textContent = d.po||'—';
+  $('fLot').textContent = d.lotSize ?? '—';
+  $('fBoard').textContent = d.board||'—';
+  $('fStart').textContent = tfmt(d.startTime);
+  $('fEnd').textContent = tfmt(d.endTime);
+  $('fCounter').textContent = d.machineCounter ?? '—';
+  $('fTotal').textContent = d.totalOutput ?? '—';
+  $('fLeader').textContent = d.leader||'';
+  // operators [1..4]
+  $('fOprs').innerHTML = [0,1,2,3].map(i=>{
+    const nm=(d.operators&&d.operators[i])||'';
+    return `<div class="o"><div class="n">[ ${i+1} ]</div><div class="nm">${nm}</div></div>`;
+  }).join('');
+  // legend
+  $('fLegend').innerHTML = (d.legend||[]).map((L,i)=>{
+    const grp = (i===0)?`<tr><td class="grp" colspan="2">Planned Stop</td></tr>` : (L.g==='Unplanned' && d.legend[i-1].g==='Planned')?`<tr><td class="grp" colspan="2">Unplanned Stop</td></tr>`:'';
+    return grp + `<tr><td>${L.t}</td><td class="c">${L.c}</td></tr>`;
+  }).join('');
+  // timeline: mark each line stop at its ACTUAL time within 8:30am..8:30pm, like the paper form
+  $('tlScale').innerHTML = SLOTS.map(h=>`<div>${slotLabel(h)}</div>`).join('');
+  const T0=8*60+30, SPAN=12*60;
+  let bar = `<div class="tl-grid">${SLOTS.map(()=>'<div></div>').join('')}</div>`;
+  (d.downtime||[]).filter(x=>x.minutes>=0.5).forEach(x=>{
+    const t=new Date(x.start); let a=(t.getHours()*60+t.getMinutes())-T0; let dur=x.minutes;
+    if(a<0){dur+=a;a=0;} if(a>=SPAN||dur<=0) return; if(a+dur>SPAN) dur=SPAN-a;
+    const mc=(x.machines&&x.machines.length)?('M'+x.machines.join('/M')):'';
+    bar += `<div class="stop" style="left:${(a/SPAN*100).toFixed(2)}%;width:${Math.max(0.6,dur/SPAN*100).toFixed(2)}%" title="${(x.machineReason||x.reason||'')} · ${mc} · ${x.minutes} min">${x.code}</div>`;
+  });
+  $('tlBar').innerHTML = bar;
+  // hourly grid
+  const hp = d.hourly||[];
+  $('hPanel').innerHTML = `<div class="rl">panel</div>`+ SLOTS.map((h,i)=>`<div>${hp[i]&&hp[i].panel?hp[i].panel:'—'}</div>`).join('');
+  $('hPcs').innerHTML   = `<div class="rl">pcs</div>`+ SLOTS.map((h,i)=>`<div>${hp[i]&&hp[i].pcs?hp[i].pcs:'—'}</div>`).join('');
+  // compact lost-time-by-machine line under the timeline (kept minimal to preserve the original form)
+  const lm = d.lostByMachine||[];
+  $('tlLost').innerHTML = lm.length
+    ? 'Lost time — '+lm.map(x=>`M${x.machine}: <b>${x.minutes}m</b>`).join(' &nbsp; ')+` &nbsp;·&nbsp; total <b>${lm.reduce((a,x)=>a+x.minutes,0).toFixed(1)}m</b>`
+    : (d.live ? '' : 'Downtime not recorded for history.');
+  $('live').textContent = d.live ? ('● LIVE · '+new Date().toLocaleTimeString()) : ('◷ HISTORY · '+d.date+' '+d.shift);
+}
+$('selDate').addEventListener('change', pick);
+$('selShift').addEventListener('change', pick);
+load();
+setInterval(()=>{ if(liveMode) load(); }, 5000);   // auto-refresh only in live mode; history is static
+</script>
+</body>
+</html>

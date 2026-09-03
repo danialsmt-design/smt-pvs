@@ -19,6 +19,8 @@
   .clock{margin-left:auto;font-family:Consolas,monospace;color:var(--acc);font-size:16px}
   main{padding:16px 20px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));align-content:start}
   #exhCard, #verifyCard{grid-column:1/-1}   /* full-width rows; the rest flow into columns */
+  #verifyCard{padding:9px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  #verifyCard h2{margin:0;flex:none}
   #healthBanner{grid-column:1/-1;background:rgba(217,99,90,.16);border:1px solid var(--red);color:var(--red);
     border-radius:10px;padding:13px 16px;font-weight:700;font-size:15px}
   .card{background:var(--pan);border:1px solid var(--ln);border-radius:12px;padding:16px 18px}
@@ -42,16 +44,30 @@
   .chip.amber{background:rgba(224,169,59,.16);color:var(--amber)}
   .chip.ok{background:rgba(79,180,119,.16);color:var(--ok)}
   .empty{color:var(--mut);padding:14px 10px;font-family:inherit}
-  .vbtns{display:flex;gap:12px;flex-wrap:wrap}
-  .vbtn{border-radius:10px;padding:12px 18px;border:1px solid var(--ln);background:var(--pan2);color:var(--mut);min-width:210px}
-  .vbtn .t{font-size:16px;font-weight:600}
-  .vbtn .s{font-size:12.5px;font-weight:400;margin-top:3px;opacity:.95}
+  .vbtns{display:flex;gap:10px;flex-wrap:wrap;flex:1 1 auto}
+  .vbtn{border-radius:8px;padding:6px 12px;border:1px solid var(--ln);background:var(--pan2);color:var(--mut);display:flex;align-items:baseline;gap:8px}
+  .vbtn .t{font-size:13px;font-weight:600}
+  .vbtn .s{font-size:11.5px;font-weight:400;opacity:.9}
   .vbtn.green{background:rgba(79,180,119,.16);border-color:var(--ok);color:var(--ok)}
   .vbtn.amber{background:rgba(224,169,59,.16);border-color:var(--amber);color:var(--amber)}
   .ev{display:flex;align-items:center;gap:12px;padding:8px 10px;border-bottom:1px solid #131A16;font-family:Consolas,monospace;font-size:13.5px}
   .ev .t{color:var(--mut)}
   .ev .badge{background:rgba(217,99,90,.16);color:var(--red);padding:2px 9px;border-radius:6px;font-weight:600}
-  #exhCard{position:sticky;top:0;z-index:6;box-shadow:0 6px 16px rgba(0,0,0,.35)}
+  /* board-count strip: single line, sticky at the very top */
+  #boardSyncCard{grid-column:1/-1;position:sticky;top:0;z-index:7;padding:9px 16px;box-shadow:0 6px 16px rgba(0,0,0,.35)}
+  .bcstrip{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .bclabel{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);font-weight:600;flex:none}
+  .bcrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:1 1 auto}
+  .bcm{background:var(--pan2);border:1px solid var(--ln);border-radius:8px;padding:4px 11px;font-size:13.5px;white-space:nowrap}
+  .bcm b{font-size:18px;font-family:Consolas,monospace;color:var(--ink)}
+  .bcm .u{color:var(--mut);font-size:11.5px}
+  .bcedit{flex:none;background:var(--pan2);border:1px solid var(--ln);color:var(--mut);border-radius:7px;padding:6px 12px;font:12.5px inherit;cursor:pointer}
+  .bcedit:hover{border-color:var(--acc);color:var(--ink)}
+  #boardSyncPanel{margin-top:12px;padding-top:12px;border-top:1px solid var(--ln);gap:8px}
+  /* collapsible forecast (minimised by default) */
+  #exhCard h2.toggleh{cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;margin:0}
+  #exhCard.open h2.toggleh{margin-bottom:12px}
+  #exhCaret{font-size:11px;color:var(--acc)}
   .exhlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
   .exrow{display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:14px;
          background:var(--pan2);border:1px solid var(--ln);border-left:7px solid var(--mut);border-radius:10px;padding:11px 16px}
@@ -77,6 +93,7 @@
     <a href="/top5.html" style="color:var(--mut);text-decoration:none;font-size:14px">Next-out</a>
     <a href="/report.html" style="color:var(--mut);text-decoration:none;font-size:14px">Daily report</a>
     <a href="/verify.html" style="color:var(--mut);text-decoration:none;font-size:14px">Verify</a>
+    <a href="/console.html" style="color:var(--mut);text-decoration:none;font-size:14px">Console</a>
     <span class="clock" id="clock">--:--:--</span>
     <button id="shutdownBtn" title="Shut down PVS on this line (frees the serial ports)"
             style="background:none;border:1px solid var(--mut);color:var(--mut);border-radius:6px;padding:3px 9px;font-size:13px;cursor:pointer">⏻ Shutdown</button>
@@ -85,10 +102,25 @@
 
 <main>
   <div id="healthBanner" style="display:none"></div>
+
+  <!-- Board count — single-line strip, sticky at top; HMI sync tucked behind the toggle -->
+  <div class="card" id="boardSyncCard">
+    <div class="bcstrip">
+      <span class="bclabel">🔢 Boards</span>
+      <div class="bcrow" id="boardSyncRows"></div>
+      <button class="bcedit" id="bcEditBtn" onclick="toggleBoardSync()" title="Correct a machine's count from its Sony HMI panel count">✎ HMI sync</button>
+    </div>
+    <div id="boardSyncPanel" style="display:none"></div>
+    <div id="boardSyncMsg" style="font-size:13px"></div>
+  </div>
+
+  <!-- Parts-out forecast — minimised/collapsible; full detail is the table lower down -->
   <div class="card" id="exhCard">
-    <h2>⏱ Parts-out forecast / ပစ္စည်းကုန်ခန့်မှန်း — next to run out / နောက်ကုန်မည့် <small id="exhHint" style="color:var(--mut);font-weight:400;font-size:13px"></small></h2>
-    <div class="exhlist" id="exhaust"></div>
-    <div class="empty" id="exhEmpty" style="display:none">No tracked reels yet — run a shift or model-change check. / ရီးလ်မှတ်တမ်းမရှိသေး — ဆစ်ဖ်ပြောင်း သို့ မော်ဒယ်ပြောင်း စစ်ဆေးပါ.</div>
+    <h2 class="toggleh" onclick="toggleExh()"><span id="exhCaret">▸</span> ⏱ Parts-out forecast / ကုန်ခန့်မှန်း — next to run out <small id="exhHint" style="color:var(--mut);font-weight:400;font-size:13px;text-transform:none;letter-spacing:0"></small></h2>
+    <div id="exhBody" style="display:none">
+      <div class="exhlist" id="exhaust"></div>
+      <div class="empty" id="exhEmpty" style="display:none">No tracked reels yet — run a shift or model-change check. / ရီးလ်မှတ်တမ်းမရှိသေး.</div>
+    </div>
   </div>
 
   <div class="card" id="stagedCard" style="display:none">
@@ -97,13 +129,26 @@
   </div>
 
   <div class="card" id="verifyCard">
-    <h2>Verification status</h2>
+    <h2>Verification</h2>
     <div class="vbtns" id="verifyBtns"></div>
   </div>
 
   <div class="card">
     <h2>Machines</h2>
     <div class="machines" id="machines"></div>
+  </div>
+
+  <div class="card" id="standbyCard">
+    <h2>📦 Standby check — scan spare reels / အရန်ရီးလ်စစ်
+        <span id="standbySummary" style="float:right;text-transform:none;letter-spacing:0;color:var(--ink);font-weight:600"></span></h2>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <input id="standbyScan" placeholder="scan standby reel / အရန်ဖတ်" autocomplete="off"
+             style="flex:1;padding:9px 12px;background:var(--pan2);border:1px solid var(--ln);border-radius:8px;color:inherit;font:inherit">
+      <button onclick="standbyReset()" title="Restart / fresh check"
+              style="background:var(--pan2);border:1px solid var(--ln);color:var(--ink);border-radius:6px;padding:8px 12px;cursor:pointer">↻</button>
+    </div>
+    <div id="standbyMsg" style="min-height:16px;font-size:13px;margin-bottom:6px"></div>
+    <div id="standbyRows" style="font-size:13px;color:var(--mut);max-height:240px;overflow:auto"></div>
   </div>
 
   <div class="card">
@@ -281,6 +326,125 @@ async function refresh(){
   }catch(e){ /* transient */ }
 }
 refresh(); setInterval(refresh, 3000);
+
+// Board count -> feeder sync. Rows are built ONCE (so the operator's typing isn't wiped by the refresh); only
+// the live PVS count/feeder cells update thereafter. Keying the HMI panel count re-syncs that machine's feeders.
+let bcPanelBuilt=false;
+async function loadBoardSync(){
+  let d; try{ d = await (await fetch('/api/machine/counts')).json(); }catch(e){ return; }
+  const all = d.machines||[];
+  // Single-line strip: every machine's live board count.
+  const strip = document.getElementById('boardSyncRows');
+  if(strip) strip.innerHTML = all.length
+    ? all.map(m=>`<span class="bcm">M${m.machine} <b>${m.boards}</b><span class="u"> bd${m.trackedFeeders?' · '+m.trackedFeeders+'f':''}</span></span>`).join('')
+    : '<span class="bcm" style="color:var(--mut)">no machines</span>';
+  // HMI-sync panel (behind the toggle) — mid-line machines only; the PCB-out machine is corrected from the lot
+  // card on the operator screen. Built ONCE so the operator's typing isn't wiped by the refresh.
+  const ms = all.filter(m=>!m.needsBadge);
+  const panel = document.getElementById('boardSyncPanel');
+  if(panel && !bcPanelBuilt){
+    panel.innerHTML = (ms.length
+      ? ms.map(m=>`
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b style="width:34px">M${m.machine}</b>
+        <span style="color:var(--mut);font-size:12.5px;min-width:96px">HMI panel count</span>
+        <input id="bsPanels${m.machine}" type="number" min="0" placeholder="panels" inputmode="numeric" onkeydown="if(event.key==='Enter')syncAllMachines()" style="width:110px;padding:6px 9px;background:var(--pan2);border:1px solid var(--ln);border-radius:7px;color:inherit;font:inherit;text-align:center">
+      </div>`).join('')
+        + `<div style="display:flex;gap:12px;align-items:center;margin-top:6px">
+             <button onclick="syncAllMachines()" style="background:var(--acc);border:1px solid var(--acc);color:#241703;border-radius:7px;padding:8px 22px;cursor:pointer;font:inherit;font-weight:700">Set all</button>
+             <span style="font-size:12px;color:var(--mut)">key each machine's HMI panel count, then Set all</span>
+           </div>`
+      : '<div class="empty" style="color:var(--mut)">No mid-line machines to sync.</div>');
+    if(ms.length) bcPanelBuilt=true;
+  }
+}
+async function syncAllMachines(){
+  const msg=document.getElementById('boardSyncMsg');
+  const inputs=[...document.querySelectorAll('#boardSyncPanel input[id^="bsPanels"]')];
+  // Only machines with a value entered are set. A BLANK machine is left alone — it KEEPS its last count.
+  const jobs=[], held=[];
+  inputs.forEach(el=>{
+    const m=parseInt(el.id.replace('bsPanels',''));
+    const raw=(el.value||'').trim();
+    if(raw===''){ held.push(m); return; }
+    const p=parseInt(raw); if(!isNaN(p)&&p>=0) jobs.push({m,p});
+  });
+  if(!jobs.length){ msg.style.color='var(--red)'; msg.textContent='Enter at least one HMI panel count. Blank machines keep their current count.'; return; }
+  msg.style.color='var(--mut)'; msg.textContent='Setting '+jobs.length+' machine(s)…';
+  const out=[];
+  for(const j of jobs){
+    try{
+      const r=await (await fetch('/api/machine/synccount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({machine:j.m,panels:j.p,badge:''})})).json();
+      out.push('M'+j.m+': '+(r.message||'ok'));
+    }catch(e){ out.push('M'+j.m+': failed'); }
+  }
+  if(held.length) out.push('<span style="color:var(--mut)">M'+held.join(', M')+': left unchanged (kept last value)</span>');
+  msg.style.color='var(--ok)'; msg.innerHTML=out.join('<br>');
+  jobs.forEach(j=>{ const el=document.getElementById('bsPanels'+j.m); if(el) el.value=''; });   // clear only the ones we set
+  loadBoardSync();
+}
+function toggleBoardSync(){
+  const p=document.getElementById('boardSyncPanel'); if(!p) return;
+  const open = p.style.display!=='none';
+  p.style.display = open?'none':'grid';
+  document.getElementById('bcEditBtn').textContent = open?'✎ HMI sync':'▾ close';
+  if(!open){ const f=p.querySelector('input'); if(f) f.focus(); }
+}
+function toggleExh(){
+  const b=document.getElementById('exhBody'), c=document.getElementById('exhCaret'), card=document.getElementById('exhCard');
+  const open = b.style.display!=='none';
+  b.style.display = open?'none':'block'; c.textContent = open?'▸':'▾'; card.classList.toggle('open',!open);
+  try{ localStorage.setItem('pvsExhOpen', open?'0':'1'); }catch(e){}
+}
+(function(){ let open=false; try{ open=localStorage.getItem('pvsExhOpen')==='1'; }catch(e){}
+  const b=document.getElementById('exhBody'), c=document.getElementById('exhCaret'), card=document.getElementById('exhCard');
+  if(b) b.style.display=open?'block':'none'; if(c) c.textContent=open?'▾':'▸'; if(card) card.classList.toggle('open',open); })();
+async function syncMachineCount(machine){
+  const pEl = document.getElementById('bsPanels'+machine);
+  const p = parseInt((pEl.value)||'');
+  const bEl = document.getElementById('bsBadge'+machine);          // only present on the PCB‑out machine
+  const b = bEl ? (bEl.value||'').trim() : '';
+  const msg = document.getElementById('boardSyncMsg');
+  if(isNaN(p)||p<0){ msg.style.color='var(--red)'; msg.textContent='M'+machine+': enter the HMI panel count.'; return; }
+  msg.style.color='var(--mut)'; msg.textContent='Setting M'+machine+'…';
+  try{
+    const r = await (await fetch('/api/machine/synccount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({machine:machine,panels:p,badge:b})})).json();
+    const refused = /^scan|^refused|not configured|coordinator/i.test(r.message||'');
+    msg.style.color = refused ? 'var(--red)' : 'var(--ok)'; msg.textContent = r.message||'';
+    if(!refused){ pEl.value=''; if(bEl) bEl.value=''; }
+    loadBoardSync();
+  }catch(e){ msg.style.color='var(--red)'; msg.textContent='Failed: '+e; }
+}
+loadBoardSync(); setInterval(loadBoardSync, 5000);
+
+// Standby check — scan spare reels physically on the rack; confirmed vs pending vs unexpected. (Moved here from
+// the operator Verify screen.) Click the box, scan each spare, read the summary.
+async function standbyLoad(){
+  try{
+    const d = await (await fetch('/api/standby/state')).json();
+    document.getElementById('standbySummary').innerHTML =
+      `<span style="color:var(--ok)">${d.confirmed} ✓</span> · <span style="color:var(--amber)">${d.pending} left</span> · ${d.believedCount} spares`+
+      (d.unexpectedCount ? ` · <span style="color:var(--red)">${d.unexpectedCount} unexpected</span>` : ``);
+    const rows = (d.rows||[]).map(r=>`<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid #131A16">`+
+        `<span style="width:16px;color:${r.confirmed?'var(--ok)':'var(--amber)'}">${r.confirmed?'✓':'·'}</span>`+
+        `<span style="flex:1;font-family:Consolas,monospace">${r.part}</span>`+
+        `<span style="color:var(--mut);font-family:Consolas,monospace">${r.uid}</span>`+
+        `<span style="width:60px;text-align:right;font-family:Consolas,monospace">${r.qty}</span></div>`).join('');
+    const u = (d.unexpected&&d.unexpected.length) ? `<div style="margin-top:6px;color:var(--red)">Unexpected: ${d.unexpected.join(', ')}</div>` : '';
+    document.getElementById('standbyRows').innerHTML = rows + u;
+  }catch(e){ /* keep last */ }
+}
+async function standbyReset(){ try{ await fetch('/api/standby/reset',{method:'POST'}); }catch(e){} document.getElementById('standbyMsg').textContent=''; standbyLoad(); }
+async function standbyScanSubmit(uid){
+  if(!uid || !uid.trim()) return;
+  try{
+    const r = await (await fetch('/api/standby/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:uid.trim()})})).json();
+    document.getElementById('standbyMsg').innerHTML =
+      `<span style="color:${r.kind==='confirmed'?'var(--ok)':(r.kind==='loaded'?'var(--amber)':'var(--red)')}">${r.message||''}</span>`;
+  }catch(e){}
+  standbyLoad();
+}
+(function(){ const el=document.getElementById('standbyScan'); if(el){ el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=el.value; el.value=''; standbyScanSubmit(v); } }); } standbyLoad(); setInterval(standbyLoad, 8000); })();
 
 // Password-protected shutdown — a clean stop releases the serial (COM) ports for test software.
 document.getElementById('shutdownBtn').onclick = async () => {
