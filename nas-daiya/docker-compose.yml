@@ -1,0 +1,27 @@
+# NAS Daiya Monitor — Synology Container Manager project.
+# Reads each SMT line's PVS Daiya over Tailscale and serves ONE mobile/PC line-monitoring page.
+# Pure read: it never sends anything to the machines or to PVS.
+#
+# Deploy:
+#   1. Copy this whole folder to the NAS docker share  ->  \\<nas>\docker\nas-daiya\
+#      (so on the NAS it is /volume1/docker/nas-daiya/, containing this file + app/).
+#   2. Container Manager -> Project -> Create -> Project name "nas-daiya",
+#      Path = /volume1/docker/nas-daiya, it picks up this compose -> Next -> Done.
+#   3. Open  http://<nas-tailscale-ip>:8899  on a phone/PC that is on Tailscale.
+#
+# network_mode: host lets the container use the NAS's Tailscale routes to reach the line PCs (100.x).
+services:
+  nas-daiya:
+    image: node:20-alpine
+    container_name: nas-daiya
+    network_mode: host
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - /volume1/docker/nas-daiya/app:/app:ro
+    command: ["node", "server.js"]
+    environment:
+      - PORT=8899
+      - POLL_SEC=30
+      # Lines to monitor: "Name=tailscale-ip" comma-separated. Edit if IPs change.
+      - PVS_LINES=Line 1=100.69.81.105,Line 2=100.94.102.44,Line 3=100.105.64.115,Line 4=100.82.187.65,Line 5=100.101.8.76

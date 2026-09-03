@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMT Line Monitor — Daiya</title>
+<style>
+  :root{--bg:#0F1512;--pan:#16201B;--pan2:#1D2A23;--ln:#2A3B31;--ink:#E8EFEA;--mut:#8AA096;
+        --acc:#D9962A;--ok:#4FB477;--red:#D9635A;--blue:#5CA9E8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",system-ui,Arial,sans-serif}
+  header{position:sticky;top:0;z-index:5;padding:12px 16px;background:linear-gradient(180deg,#141d18,#0f1512);
+    border-bottom:1px solid var(--ln);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.02em}
+  header .upd{margin-left:auto;font-size:12px;color:var(--mut)}
+  main{padding:14px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));max-width:1500px;margin:0 auto}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:14px;padding:14px 15px;display:flex;flex-direction:column;gap:10px}
+  .card.off{opacity:.6}
+  .top{display:flex;align-items:center;gap:9px}
+  .top .nm{font-size:17px;font-weight:700}
+  .pill{padding:2px 9px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.04em;border:1px solid var(--ln)}
+  .pill.live{color:var(--ok);border-color:var(--ok)} .pill.off{color:var(--red);border-color:var(--red)}
+  .pill.ok{color:var(--ok);border-color:var(--ok)} .pill.warn{color:var(--acc);border-color:var(--acc)}
+  .pill.down{color:var(--red);border-color:var(--red)} .pill.na{color:var(--mut)}
+  .sub{font-size:13px;color:var(--mut)}
+  .sub b{color:var(--ink);font-weight:600}
+  .big{display:flex;align-items:baseline;gap:8px}
+  .big .out{font-size:34px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .big .tgt{font-size:14px;color:var(--mut)}
+  .bar{height:9px;border-radius:6px;background:var(--pan2);overflow:hidden;border:1px solid var(--ln)}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#f0b95a)}
+  .bar>i.done{background:linear-gradient(90deg,var(--ok),#7fe0a3)}
+  .row{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mut)}
+  .row b{color:var(--ink);font-weight:600}
+  .hrs{display:flex;align-items:flex-end;gap:3px;height:46px;margin-top:2px}
+  .hrs .h{flex:1;min-width:5px;background:var(--pan2);border-radius:3px 3px 0 0;position:relative;display:flex;align-items:flex-end}
+  .hrs .h>i{width:100%;background:var(--blue);border-radius:3px 3px 0 0;min-height:2px}
+  .hrs .h.now>i{background:var(--acc)}
+  .hlbl{display:flex;gap:3px;font-size:9px;color:#5C7268;margin-top:2px}
+  .hlbl span{flex:1;text-align:center;overflow:hidden;white-space:nowrap}
+  .err{color:var(--red);font-size:12.5px}
+  footer{text-align:center;color:#5C7268;font-size:11.5px;padding:10px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏭 SMT Line Monitor</h1>
+  <span class="pill live" id="autopill">● LIVE</span>
+  <span class="upd" id="upd">connecting…</span>
+</header>
+<main id="grid"></main>
+<footer id="foot"></footer>
+
+<script>
+function esc(s){ return (s==null?'':(''+s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function num(n){ if(n==null||n==='') return null; const v=+n; return Number.isNaN(v)?null:v; }
+
+function healthPill(h){
+  const st = h && h.status ? h.status : null;
+  if(st==='ok') return '<span class="pill ok">HEALTHY</span>';
+  if(st==='warn') return '<span class="pill warn">WARN</span>';
+  if(st==='down') return '<span class="pill down">DOWN</span>';
+  return '';
+}
+
+function card(l){
+  if(!l.ok){
+    return `<div class="card off"><div class="top"><span class="nm">${esc(l.name)}</span><span class="pill off">OFFLINE</span></div>
+      <div class="err">No response from PVS (${esc(l.ip)}). Line PC off, or PVS not running.</div></div>`;
+  }
+  const d = l.daiya||{}, s = l.status||{};
+  const machines = s.machines||[];
+  const online = machines.filter(m=>m.online).length, total = machines.length;
+  const producing = machines.filter(m=>m.boardsPerHour).length;
+  const out = num(d.totalOutput), tgt = num(d.targetShift);
+  const pct = (out!=null && tgt) ? Math.min(100, Math.round(out/tgt*100)) : null;
+  const model = d.model || (machines.find(m=>m.model)||{}).model || '—';
+  const live = d.live;
+  const hourly = Array.isArray(d.hourly) ? d.hourly : [];
+  const maxH = Math.max(1, ...hourly.map(h=>num(h.panel)||0));
+  const nowLabelIdx = hourly.length-1;
+  // downtime is an array of stop spans → total lost minutes this shift
+  const dtArr = Array.isArray(d.downtime) ? d.downtime : [];
+  const dt = dtArr.length ? Math.round(dtArr.reduce((s,x)=>s+(num(x.minutes)||0),0)) : null;
+
+  const hrsBars = hourly.map((h,i)=>{
+    const v = num(h.panel)||0; const ph = Math.round(v/maxH*100);
+    return `<div class="h ${i===nowLabelIdx?'now':''}" title="${esc(h.label)}: ${v} panel"><i style="height:${ph}%"></i></div>`;
+  }).join('');
+  const hrsLbl = hourly.map(h=>`<span>${esc((h.label||'').replace(/(am|pm)$/,''))}</span>`).join('');
+
+  return `<div class="card">
+    <div class="top">
+      <span class="nm">${esc(l.name)}</span>
+      ${live?'<span class="pill live">● LIVE</span>':'<span class="pill na">idle</span>'}
+      ${healthPill(l.health)}
+    </div>
+    <div class="sub"><b>${esc(model)}</b> · ${esc(d.shift||'—')} shift${d.po?(' · PO '+esc(d.po)):''}</div>
+    <div class="big"><span class="out">${out!=null?out:'—'}</span><span class="tgt">/ ${tgt!=null?tgt:'—'} target${pct!=null?(' · '+pct+'%'):''}</span></div>
+    <div class="bar"><i class="${pct>=100?'done':''}" style="width:${pct||0}%"></i></div>
+    ${hourly.length?`<div><div class="hrs">${hrsBars}</div><div class="hlbl">${hrsLbl}</div></div>`:''}
+    <div class="row">
+      <span>Machines <b>${online}/${total}</b></span>
+      <span>Producing <b>${producing}</b></span>
+      ${dt!=null?`<span>Downtime <b>${dt} min</b></span>`:''}
+      ${d.leader?`<span>Leader <b>${esc(d.leader)}</b></span>`:''}
+    </div>
+  </div>`;
+}
+
+async function tick(){
+  try{
+    const r = await (await fetch('/api/all',{cache:'no-store'})).json();
+    document.getElementById('grid').innerHTML = r.lines.map(card).join('');
+    const t = new Date(r.lastPoll||r.generatedAt);
+    document.getElementById('upd').textContent = 'updated '+t.toLocaleTimeString()+' · every '+r.pollSec+'s';
+    document.getElementById('autopill').className='pill live';
+    document.getElementById('autopill').textContent='● LIVE';
+    document.getElementById('foot').textContent = r.lines.length+' lines · data from each line’s PVS Daiya';
+  }catch(e){
+    document.getElementById('autopill').className='pill off';
+    document.getElementById('autopill').textContent='● NO DATA';
+  }
+  setTimeout(tick, 15000);
+}
+tick();
+</script>
+</body>
+</html>
