@@ -23,5 +23,7 @@ services:
     environment:
       - PORT=8899
       - POLL_SEC=30
-      # Lines to monitor: "Name=tailscale-ip" comma-separated. Edit if IPs change.
-      - PVS_LINES=Line 1=100.69.81.105,Line 2=100.94.102.44,Line 3=100.105.64.115,Line 4=100.82.187.65,Line 5=100.101.8.76
+      # Lines to monitor: "Name=ip". The NAS reaches the lines over the FACTORY LAN (192.168.0.x) — PVS's
+      # 5199 is Tailscale-only, so each line has a scoped firewall rule allowing only this NAS (192.168.0.169).
+      # These are DHCP addresses; if a line PC's IP changes, update it here and restart the project.
+      - PVS_LINES=Line 1=192.168.0.105,Line 2=192.168.0.162,Line 3=192.168.0.126,Line 4=192.168.0.144,Line 5=192.168.0.190
