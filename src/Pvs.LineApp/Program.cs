@@ -1540,15 +1540,34 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
         return h >= 8 && h <= 19 ? h : -1;
     }
 
-    var byLot = runs.GroupBy(r => r.LotNo)
-        .Select(g => new { Lot = g.Key, Boards = g.Sum(x => x.Quantity), g.First().Model, g.First().Side })
-        .OrderByDescending(x => x.Boards).ToList();
-    string headModel = byLot.FirstOrDefault()?.Model ?? "";
-    string headSide = byLot.FirstOrDefault()?.Side ?? "";
-    string lot = byLot.FirstOrDefault()?.Lot ?? "";
+    // ONE Daiya per day/shift can hold SEVERAL lots. Group per lot, ordered by when each last ran, so the sheet
+    // lists every lot of the day and the header reflects the CURRENT (latest) lot — not whichever lot has the most
+    // boards (that kept the header stuck on a finished lot while a new one was running).
+    var lotGroups = runs.GroupBy(r => r.LotNo)
+        .Select(g => new {
+            Lot = g.Key, Model = g.First().Model, Side = g.First().Side,
+            Boards = g.Sum(x => x.Quantity),
+            LastEnd = g.Select(x => x.EndTime).Where(x => !string.IsNullOrWhiteSpace(x) && x != "00:00:00").DefaultIfEmpty("").Max()
+        })
+        .OrderBy(x => x.LastEnd).ToList();
+    // Per-lot rows (each lot's own target + output), and the day target = SUM of the lots' targets.
+    var lots = new List<object>();
+    int dayTargetSum = 0; bool anyTarget = false;
+    foreach (var lg in lotGroups)
+    {
+        int pp = Math.Max(1, line.Config.PanelBoardsFor(lg.Model));
+        int? lt = null;
+        if (!string.IsNullOrWhiteSpace(lg.Lot)) { try { lt = await repo.GetLotTargetAsync(lg.Lot); } catch { } }
+        if (lt.HasValue) { dayTargetSum += lt.Value; anyTarget = true; }
+        lots.Add(new { lotNo = lg.Lot, model = string.IsNullOrWhiteSpace(lg.Side) ? lg.Model : $"{lg.Model} {lg.Side} SIDE",
+                       target = lt, boards = lg.Boards, panels = lg.Boards / pp });
+    }
+    var current = lotGroups.LastOrDefault();   // most recent lot = header
+    string headModel = current?.Model ?? "";
+    string headSide = current?.Side ?? "";
+    string lot = current?.Lot ?? "";
     int perPanel = Math.Max(1, line.Config.PanelBoardsFor(headModel));
-    int? target = null;
-    if (!string.IsNullOrWhiteSpace(lot)) { try { target = await repo.GetLotTargetAsync(lot); } catch { } }
+    int? target = anyTarget ? dayTargetSum : (int?)null;   // day target = sum of all lots' targets
 
     int[] slots = { 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 };
     static string Lbl(int h) { int hr = h % 12; if (hr == 0) hr = 12; return $"{hr}.30{(h < 12 ? "am" : "pm")}"; }
@@ -1602,7 +1621,7 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
         endTime = lastEnd is null ? null : $"{reqDate}T{lastEnd}",
         machineCounter = panels, totalOutput = totalBoards, perPanel,
         targetShift = target, targetHour = target.HasValue ? (int?)Math.Ceiling(target.Value / 12.0) : null,
-        hourly, downtime, lostByMachine,
+        hourly, lots, downtime, lostByMachine,
         legend = new object[]
         {
             new { c = "A", t = "Daily / Monthly Maintenance", g = "Planned" }, new { c = "B", t = "Schedule Stop / Break Time", g = "Planned" },

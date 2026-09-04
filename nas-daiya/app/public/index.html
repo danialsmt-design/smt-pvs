@@ -85,6 +85,11 @@ function card(l){
   // downtime is an array of stop spans → total lost minutes this shift
   const dtArr = Array.isArray(d.downtime) ? d.downtime : [];
   const dt = dtArr.length ? Math.round(dtArr.reduce((s,x)=>s+(num(x.minutes)||0),0)) : null;
+  // per-lot rows — a day can run several lots on one Daiya
+  const lotsArr = Array.isArray(d.lots) ? d.lots : [];
+  const lotsLine = lotsArr.length>1
+    ? `<div class="row" style="font-size:11.5px"><span>Lots: ${lotsArr.map(L=>`<b>${esc((L.lotNo||'').slice(-5))}</b> ${num(L.panels)??'—'}/${num(L.target)??'—'}`).join(' · ')}</span></div>`
+    : '';
 
   const hrsBars = hourly.map((h,i)=>{
     const v = num(h.panel)||0; const ph = Math.round(v/maxH*100);
@@ -108,6 +113,7 @@ function card(l){
       ${dt!=null?`<span>Downtime <b>${dt} min</b></span>`:''}
       ${d.leader?`<span>Leader <b>${esc(d.leader)}</b></span>`:''}
     </div>
+    ${lotsLine}
   </div>`;
 }
 

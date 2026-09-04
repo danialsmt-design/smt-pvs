@@ -124,6 +124,14 @@
       <tr><td class="k">TOTAL OUTPUT (pcs)</td><td class="v" id="fTotal"></td></tr>
     </table>
 
+    <table class="fields" id="fLotsWrap" style="margin-top:6px;display:none">
+      <tr><td colspan="4" style="text-align:center;font-weight:700;background:#eef;padding:3px">LOTS THIS SHIFT</td></tr>
+      <tr style="background:#f6f6fb;font-size:10px;color:#555">
+        <td style="padding:2px 5px">LOT NO</td><td style="padding:2px 5px">MODEL</td>
+        <td style="padding:2px 5px;text-align:right">TARGET</td><td style="padding:2px 5px;text-align:right">PANELS</td></tr>
+      <tbody id="fLots"></tbody>
+    </table>
+
     <div class="oprs">
       <div class="lbl">MACHINE OPR NAME :</div>
       <div class="grid" id="fOprs"></div>
@@ -183,6 +191,14 @@ async function load(){
   $('fModel').textContent = d.model||'—';
   $('fPo').textContent = d.po||'—';
   $('fLot').textContent = d.lotSize ?? '—';
+  // per-lot rows — one Daiya per day can hold several lots; show them all when there's more than one
+  const lots = d.lots||[];
+  if(lots.length>1){
+    $('fLotsWrap').style.display='';
+    $('fLots').innerHTML = lots.map(L=>`<tr>
+      <td style="padding:2px 5px">${L.lotNo||'—'}</td><td style="padding:2px 5px">${L.model||''}</td>
+      <td style="padding:2px 5px;text-align:right">${L.target??'—'}</td><td style="padding:2px 5px;text-align:right">${L.panels??'—'}</td></tr>`).join('');
+  } else { $('fLotsWrap').style.display='none'; }
   $('fBoard').textContent = d.board||'—';
   $('fStart').textContent = tfmt(d.startTime);
   $('fEnd').textContent = tfmt(d.endTime);
