@@ -2086,8 +2086,17 @@ public sealed class SessionCoordinator : IDisposable
         double tol = _config.UsageToleranceOverPct > 0 ? _config.UsageToleranceOverPct : 0.2;
         lock (_gate)
         {
-            lotBoards = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal));
-            report = BuildLotUsage(outgoingLot, lotBoards);   // AS-FOUND: deviations + verdicts BEFORE any recalc
+            // Calibrate against the LOT SIZE (PO target), NOT PVS's own count — the running count is the thing that
+            // drifts (missed R0 board-completes), so it can't calibrate itself. The lot size is the independent truth
+            // for a completed lot. UNITS: the lot size is in BOARDS, but the counter/decrement work in PANELS/cycles
+            // (one R0 = one panel = boards-per-panel child boards), so convert boards -> panels before calibrating.
+            // Fall back to the counted panels only when no lot size is known (DB down).
+            int perPanel = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1; if (perPanel < 1) perPanel = 1;
+            int countedPanels = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal));
+            lotBoards = (_lotTarget is int lt && lt > 0)
+                ? (int)Math.Round((double)(lt + _lotExtra) / perPanel)   // lot size (boards) -> panels/cycles
+                : countedPanels;
+            report = BuildLotUsage(outgoingLot, lotBoards);   // AS-FOUND: deviations vs the lot size BEFORE any recalc
             // Comprehensive check: a machine whose decrement deviates from the bible (perBoard × lotBoards) by more
             // than the tolerance is RECALCULATED against the bible — snap its board count to the lot count and
             // correct its feeders. Audited + reversible; grounded in the governing per-lot total. Machines within
