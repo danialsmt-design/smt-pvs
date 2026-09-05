@@ -21,6 +21,22 @@ public sealed class WhatsAppSender
     }
 
     public bool Configured => _url is not null && _to is not null;
+    /// <summary>The bridge URL is set (a specific recipient may still be given per-call via SendToAsync).</summary>
+    public bool HasBridge => _url is not null;
+
+    /// <summary>Send to a SPECIFIC recipient (independent of the default). Returns true on 2xx; never throws.</summary>
+    public async Task<bool> SendToAsync(string recipient, string message)
+    {
+        if (_url is null || string.IsNullOrWhiteSpace(recipient)) return false;
+        try
+        {
+            var body = System.Text.Json.JsonSerializer.Serialize(new { recipient = recipient.Trim(), message });
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            using var resp = await Http.PostAsync(_url + "/api/send", content);
+            return resp.IsSuccessStatusCode;
+        }
+        catch { return false; }
+    }
 
     /// <summary>Posts the message to the bridge. Returns true on a 2xx, false on anything else (never throws).</summary>
     public async Task<bool> SendAsync(string message)

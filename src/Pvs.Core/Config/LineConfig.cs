@@ -87,6 +87,17 @@ public sealed class AlertConfig
     public string WhatsAppRecipient { get; set; } = "60122185237";
     /// <summary>Alert on WhatsApp when NEITHER DB path is reachable (both primary and fallback down).</summary>
     public bool DbDownAlert { get; set; } = true;
+
+    /// <summary>Alert the production manager on WhatsApp when a feeder's C1Z pickup rate falls below
+    /// <see cref="PickupAlertRatePct"/>. Fires ONCE per feeder per lot/reel (re-arms on lot or reel change), and only
+    /// once the feeder has at least <see cref="PickupAlertMinPicks"/> attempts so a low-sample feeder can't false-alarm.</summary>
+    public bool PickupAlert { get; set; } = true;
+    /// <summary>Pickup-rate threshold (percent). A feeder whose C1Z PR drops below this alerts. Default 99.8.</summary>
+    public double PickupAlertRatePct { get; set; } = 99.8;
+    /// <summary>Minimum attempted pickups (VC) before a feeder can raise a pickup-rate alert. Default 1000.</summary>
+    public int PickupAlertMinPicks { get; set; } = 1000;
+    /// <summary>WhatsApp recipients for the pickup-rate alert (comma-separated). Default: Raja Rao + Danish.</summary>
+    public string PickupAlertRecipients { get; set; } = "60163327003,60122445237";
 }
 
 public sealed class BadgeConfig

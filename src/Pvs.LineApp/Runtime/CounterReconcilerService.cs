@@ -132,6 +132,11 @@ public sealed class CounterReconcilerService : IDisposable
     // Debounce for gap-triggered passes (transaction-ID blind spots), so a burst of gaps can't stack up reads.
     private DateTime _lastGapRun;
 
+    // Feeder pickup-rate alert: WhatsApp the manager when a feeder's C1Z pickup rate drops below the threshold.
+    // ONCE per feeder per lot/reel (dedup key includes lot + reel UID, so it re-arms on a lot or reel change).
+    private readonly HashSet<string> _pickupAlerted = new();
+    private WhatsAppSender? _pickupAlertSender;
+
     // Board-complete-triggered C1M capture: read the machine report in the CLEAR WINDOW right after a board
     // completes (Appendix F — the head is between motions, so C1M is "Possible"; during active mounting it is
     // Head-Operation/Wait-Position → A4E00). Per-machine debounce + a busy guard so captures never overlap.
@@ -233,6 +238,18 @@ public sealed class CounterReconcilerService : IDisposable
         // the machine's OWN per-feeder truth. Cycles every ~machines × 45s. Read-only; never writes stock.
         _supplyTimer = new Timer(_ => { _ = CaptureNextSupplyAsync(); }, null,
             TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(45));
+
+        // Feeder pickup-rate alert — check EVERY C1Z landing (auto rotation, manual read, or endpoint) and WhatsApp
+        // the manager once when a feeder's pickup rate drops below the threshold. Fire-and-forget; never blocks serial.
+        if (_line.Config.Alerts.PickupAlert)
+        {
+            _pickupAlertSender = new WhatsAppSender(_line.Config.Alerts.WhatsAppBridgeUrl, _line.Config.Alerts.WhatsAppRecipient);
+            foreach (var l in _line.Listeners)
+            {
+                int mno = l.Channel.Machine;
+                l.Channel.SupplyReportRead += raw => { try { CheckPickupRates(mno, raw); } catch (Exception ex) { _log.LogDebug(ex, "pickup-rate check failed."); } };
+            }
+        }
 
         // A serial blind spot (transaction-ID gap) means PVS's live count may now be short on that machine, so
         // read the machine's OWN counter (C1M) right away instead of waiting for the next heartbeat. Debounced:
@@ -571,6 +588,47 @@ public sealed class CounterReconcilerService : IDisposable
         }
         catch (Exception ex) { _log.LogDebug(ex, "C1Z rotation tick failed."); }
         finally { System.Threading.Interlocked.Exchange(ref _supplyBusy, 0); }
+    }
+
+    /// <summary>On a fresh C1Z, WhatsApp the manager when a feeder's pickup rate (PR) is below the configured
+    /// threshold — ONCE per feeder per lot/reel, and only once the feeder has enough attempts to be meaningful.
+    /// Read-only, fire-and-forget: it never blocks the serial thread and swallows its own errors.</summary>
+    private void CheckPickupRates(int machine, string? raw)
+    {
+        var cfg = _line.Config.Alerts;
+        if (!cfg.PickupAlert || _pickupAlertSender is null || !_pickupAlertSender.HasBridge) return;
+        if (string.IsNullOrWhiteSpace(raw)) return;
+        var rep = Pvs.Core.Serial.SonySupplyReport.Parse(raw);
+        if (rep.Feeders is null || rep.Feeders.Count == 0) return;
+
+        var coord = _line.Coordinator;
+        string lot = coord?.CurrentLotNo ?? "";
+        var recipients = (cfg.PickupAlertRecipients ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (recipients.Length == 0) return;
+
+        foreach (var f in rep.Feeders)
+        {
+            if (f.Attempted < cfg.PickupAlertMinPicks) continue;          // too few picks to judge
+            double rate = f.RateHundredthsPct / 100.0;
+            if (rate <= 0 || rate >= cfg.PickupAlertRatePct) continue;    // only a valid, below-threshold rate
+
+            var fs = coord?.FeederStateOf(machine, f.SupplyLocation);
+            string part = fs?.PartNumber ?? "?";
+            string uid = fs?.ReelUid ?? "";
+            string key = $"{_line.Config.LineId}|{machine}|{f.SupplyLocation}|{lot}|{uid}";
+            lock (_gate) { if (!_pickupAlerted.Add(key)) continue; }      // already alerted this feeder for this lot/reel
+
+            long lost = f.Attempted - f.Successful;
+            string msg = $"⚠️ PVS pickup alert\n{_line.Config.LineName} · M{machine} · F{f.SupplyLocation}\n" +
+                         $"{part}\nPickup {rate:0.00}% (below {cfg.PickupAlertRatePct}%)\n" +
+                         $"{f.Attempted} picks, {lost} not placed (miss {f.Missed} + abn {f.Abnormal})" +
+                         (string.IsNullOrWhiteSpace(lot) ? "" : $"\nLot {lot}");
+            var snd = _pickupAlertSender;
+            _ = Task.Run(async () => { foreach (var r in recipients) await snd.SendToAsync(r, msg); });
+            _log.LogWarning("Pickup-rate alert: {Line} M{M} F{F} {Part} {Rate}% ({Att} picks) — WhatsApp to {Rcpt}.",
+                _line.Config.LineName, machine, f.SupplyLocation, part, rate.ToString("0.00"), f.Attempted, string.Join(",", recipients));
+        }
     }
 
     private async Task CaptureSupplyReportsAsync()
