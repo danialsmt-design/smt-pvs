@@ -1621,7 +1621,8 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
         line = line.Config.LineName, lineId = line.Config.LineId, date = reqDate,
         shift = reqShift,
         model = string.IsNullOrWhiteSpace(headSide) ? headModel : $"{headModel} {headSide} SIDE",
-        po = lot, lotSize = target, board = "",
+        // PO NO names EVERY lot on this sheet (a day/shift can run several), in run order; LOT SIZE is their summed target.
+        po = string.Join(", ", lotGroups.Select(g => g.Lot).Where(l => !string.IsNullOrWhiteSpace(l))), lotSize = target, board = "",
         leader, operators,
         startTime = firstStart is null ? null : $"{reqDate}T{firstStart}",
         endTime = lastEnd is null ? null : $"{reqDate}T{lastEnd}",
