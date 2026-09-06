@@ -69,6 +69,19 @@
       </div>
     </div>
 
+    <div class="row">
+      <select id="tally" onchange="save()" style="flex:0 0 auto;margin-top:3px;background:var(--pan2);color:var(--ink);border:1px solid var(--ln);border-radius:8px;padding:6px 10px;font:inherit">
+        <option value="off">Off</option>
+        <option value="shadow">Shadow</option>
+        <option value="apply">Apply</option>
+      </select>
+      <div class="txt">
+        <div class="t">Machine-tally sync from per-feeder pickups</div>
+        <div class="d">On every landed C1Z, the machine&rsquo;s own panel count (median of successful pickups &divide; mount over its feeders) is compared with PVS&rsquo;s board tally for that machine. <b>Shadow</b> only records what it would correct (see <a class="lnk" href="/api/tallysync" style="color:var(--acc)">/api/tallysync</a>). <b>Apply</b> corrects the tally &mdash; and the feeders by the difference &mdash; the same way as the operator&rsquo;s HMI sync. A report from before the operator&rsquo;s per-lot reset is ignored.</div>
+        <div class="state" id="tallyState">&mdash;</div>
+      </div>
+    </div>
+
     <div class="msg" id="msg"></div>
   </div>
 </main>
@@ -76,8 +89,11 @@
 <script>
 const $ = id => document.getElementById(id);
 function setMsg(t, ok){ const m=$('msg'); m.textContent=t; m.className='msg '+(ok?'ok':'err'); }
-function paint(z, m){
+function paint(z, m, t){
   $('c1z').checked = !!z; $('c1m').checked = !!m;
+  t = (t||'off'); $('tally').value = t;
+  $('tallyState').textContent = t==='apply' ? 'APPLY — correcting the tally from the machine' : t==='shadow' ? 'SHADOW — recording only, nothing changed' : 'OFF';
+  $('tallyState').className = 'state ' + (t==='off' ? 'off' : 'on');
   $('c1zState').textContent = z ? 'ON — reading automatically' : 'OFF — manual only';
   $('c1zState').className = 'state ' + (z?'on':'off');
   $('c1mState').textContent = m ? 'ON — reading automatically' : 'OFF — manual only';
@@ -89,17 +105,17 @@ async function load(){
   }catch(e){}
   try{
     const r = await (await fetch('/api/setup')).json();
-    paint(r.autoC1z, r.autoC1m);
+    paint(r.autoC1z, r.autoC1m, r.tallySync);
     if(r.ready===false) setMsg('Reconciler not ready yet — try again in a moment.', false);
   }catch(e){ setMsg('Could not load setup: '+e, false); }
 }
 let busy=false;
 async function save(){
   if(busy) return; busy=true;
-  const body = { autoC1z: $('c1z').checked, autoC1m: $('c1m').checked };
+  const body = { autoC1z: $('c1z').checked, autoC1m: $('c1m').checked, tallySync: $('tally').value };
   try{
     const r = await (await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-    paint(r.autoC1z, r.autoC1m);
+    paint(r.autoC1z, r.autoC1m, r.tallySync);
     setMsg(r.message || 'Saved.', true);
   }catch(e){ setMsg('Save failed: '+e, false); load(); }
   busy=false;

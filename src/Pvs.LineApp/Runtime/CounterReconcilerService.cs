@@ -110,24 +110,29 @@ public sealed class CounterReconcilerService : IDisposable
     private volatile bool _autoC1z = true, _autoC1m = true;
     public bool AutoC1z { get => _autoC1z; set { _autoC1z = value; SaveAutoFlags(); } }
     public bool AutoC1m { get => _autoC1m; set { _autoC1m = value; SaveAutoFlags(); } }
+    // Machine-tally sync from C1Z (off | shadow | apply) — see LineConfig.C1zTallySync. Same persistence as the switches.
+    private volatile string _tallySync = "off";
+    public string TallySyncMode { get => _tallySync; set { _tallySync = NormalizeTally(value); SaveAutoFlags(); } }
+    private static string NormalizeTally(string? v) => (v ?? "").Trim().ToLowerInvariant() switch { "apply" => "apply", "shadow" => "shadow", _ => "off" };
     private string AutoFlagsPath => Path.Combine(_dir, "auto-commands.json");
-    private sealed record AutoFlags(bool c1z, bool c1m);
+    private sealed record AutoFlags(bool c1z, bool c1m, string? tally = null);
     private void SaveAutoFlags()
     {
-        try { Directory.CreateDirectory(_dir); File.WriteAllText(AutoFlagsPath, JsonSerializer.Serialize(new AutoFlags(_autoC1z, _autoC1m))); }
+        try { Directory.CreateDirectory(_dir); File.WriteAllText(AutoFlagsPath, JsonSerializer.Serialize(new AutoFlags(_autoC1z, _autoC1m, _tallySync))); }
         catch (Exception ex) { _log.LogDebug(ex, "auto-commands save failed."); }
     }
     private void LoadAutoFlags()
     {
         _autoC1z = _line.Config.AutoC1z; _autoC1m = _line.Config.AutoC1m;   // config default...
+        _tallySync = NormalizeTally(_line.Config.C1zTallySync);
         try
         {
             if (File.Exists(AutoFlagsPath) &&
                 JsonSerializer.Deserialize<AutoFlags>(File.ReadAllText(AutoFlagsPath)) is { } d)
-            { _autoC1z = d.c1z; _autoC1m = d.c1m; }   // ...overridden by the operator's last runtime choice
+            { _autoC1z = d.c1z; _autoC1m = d.c1m; if (d.tally is not null) _tallySync = NormalizeTally(d.tally); }   // ...overridden by the operator's last runtime choice
         }
         catch (Exception ex) { _log.LogDebug(ex, "auto-commands load failed."); }
-        _log.LogInformation("Auto-command switches: C1Z rotation={C1z}, C1M reads={C1m}.", _autoC1z, _autoC1m);
+        _log.LogInformation("Auto-command switches: C1Z rotation={C1z}, C1M reads={C1m}, machine-tally sync={Tally}.", _autoC1z, _autoC1m, _tallySync);
     }
     // Debounce for gap-triggered passes (transaction-ID blind spots), so a burst of gaps can't stack up reads.
     private DateTime _lastGapRun;
@@ -249,6 +254,15 @@ public sealed class CounterReconcilerService : IDisposable
                 int mno = l.Channel.Machine;
                 l.Channel.SupplyReportRead += raw => { try { CheckPickupRates(mno, raw); } catch (Exception ex) { _log.LogDebug(ex, "pickup-rate check failed."); } };
             }
+        }
+
+        // Machine-tally sync (C1Z → board tally): evaluate EVERY landed per-feeder report (auto rotation, manual read,
+        // endpoint) against that machine's own board tally. "shadow" records what it would correct and touches
+        // nothing; "apply" corrects through the operator-HMI-sync path. "off" = nothing happens.
+        foreach (var l in _line.Listeners)
+        {
+            int mno = l.Channel.Machine;
+            l.Channel.SupplyReportRead += raw => { try { TallySyncFromReport(mno, raw); } catch (Exception ex) { _log.LogDebug(ex, "machine-tally sync failed."); } };
         }
 
         // A serial blind spot (transaction-ID gap) means PVS's live count may now be short on that machine, so
@@ -629,6 +643,18 @@ public sealed class CounterReconcilerService : IDisposable
             _log.LogWarning("Pickup-rate alert: {Line} M{M} F{F} {Part} {Rate}% ({Att} picks) — WhatsApp to {Rcpt}.",
                 _line.Config.LineName, machine, f.SupplyLocation, part, rate.ToString("0.00"), f.Attempted, string.Join(",", recipients));
         }
+    }
+
+    /// <summary>Hand a landed C1Z to the coordinator's machine-tally sync (per-feeder successful pickups only).</summary>
+    private void TallySyncFromReport(int machine, string? raw)
+    {
+        string mode = _tallySync;
+        if (mode == "off" || string.IsNullOrWhiteSpace(raw)) return;
+        var coord = _line.Coordinator;
+        if (coord is null) return;
+        var rep = Pvs.Core.Serial.SonySupplyReport.Parse(raw);
+        if (rep.Feeders is null || rep.Feeders.Count == 0) return;
+        coord.TallySyncFromMachine(machine, rep.Feeders.Select(f => (f.SupplyLocation, f.Successful)).ToList(), mode);
     }
 
     private async Task CaptureSupplyReportsAsync()

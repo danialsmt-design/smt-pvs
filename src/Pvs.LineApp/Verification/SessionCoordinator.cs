@@ -1141,6 +1141,7 @@ public sealed class SessionCoordinator : IDisposable
         // the tally to the FINISHED lot's size; leaving it there inflates the next lot's usage check and would make a
         // later HMI sync / lot-end recalc hand pieces BACK. Seeding never touches a feeder's remaining.
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);
+        lock (_gate) _tallyLast.Clear();   // machine-tally results belong to the finished lot
         SaveLotProgress();
         _log.LogInformation("Lot changed to {Lot}; target {Target} boards; board counter reset.", lot, target);
     }
@@ -2040,6 +2041,9 @@ public sealed class SessionCoordinator : IDisposable
         var machines = _channels.OrderBy(kv => kv.Key).Select(kv =>
         {
             var ch = kv.Value; int mb = ch.Inventory.BoardsApplied; int gap = lotBoards - mb;
+            // The machine's OWN panel count from its last lot-aligned C1Z (median successful ÷ mount), if one landed.
+            int? c1zPanels = _tallyLast.TryGetValue(kv.Key, out var tl) && tl.LotNo == lotNo && tl.Verdict is "aligned" or "would-apply" or "applied" ? tl.MachinePanels : (int?)null;
+            DateTime? c1zAt = c1zPanels is null ? null : tl!.At;
             var feeders = ch.Inventory.Feeders.Where(f => f.IsTracked).OrderBy(f => f.Feeder).Select(f => new
             {
                 feeder = f.Feeder, part = f.PartNumber, perBoard = f.MountedPerBoard,
@@ -2055,7 +2059,7 @@ public sealed class SessionCoordinator : IDisposable
             {
                 machine = kv.Key, machineBoards = mb, boardGap = gap,
                 deviationPct = Math.Round(devPct, 3), accuracyPct = Math.Round(100.0 - devPct, 3),
-                verdict, matches = verdict is "ok" or "n/a", feeders
+                verdict, matches = verdict is "ok" or "n/a", c1zPanels, c1zAt, feeders
             };
         }).ToList();
         var outMachines = machines.Where(m => m.verdict == "OUT").Select(m => m.machine).ToList();
@@ -2101,6 +2105,13 @@ public sealed class SessionCoordinator : IDisposable
                 ? (int)Math.Round((double)(lt + _lotExtra) / perPanel)   // lot size (boards) -> panels/cycles
                 : countedPanels;
             report = BuildLotUsage(outgoingLot, lotBoards);   // AS-FOUND: deviations vs the lot size BEFORE any recalc
+            // Lot-end check, machine by machine: the machine's OWN count (last lot-aligned C1Z) vs the lot size vs
+            // PVS's tally. Logged for the calibration-source decision; the recalc below still uses the lot size.
+            foreach (var kv in _tallyLast.OrderBy(k => k.Key))
+                if (kv.Value.LotNo == outgoingLot)
+                    _log.LogInformation("Lot {Lot} lot-end check M{M}: machine pickups {MP}p (C1Z {At:HH:mm}, {Verdict}), lot size {LS}p, PVS tally {T}p.",
+                        outgoingLot, kv.Key, kv.Value.MachinePanels, kv.Value.At, kv.Value.Verdict, lotBoards,
+                        _channels.TryGetValue(kv.Key, out var tch) ? tch.Inventory.BoardsApplied : -1);
             // Comprehensive check: a machine whose decrement deviates from the bible (perBoard × lotBoards) by more
             // than the tolerance is RECALCULATED against the bible — snap its board count to the lot count and
             // correct its feeders. Audited + reversible; grounded in the governing per-lot total. Machines within
@@ -2146,6 +2157,107 @@ public sealed class SessionCoordinator : IDisposable
         }
     }
 
+    // ---- Machine-tally sync: the machine's own board count (from its C1Z pickups) vs PVS's R0 tally -------------
+    /// <summary>One evaluation of a landed C1Z report against a machine's board tally.</summary>
+    public sealed record TallySyncResult(DateTime At, int Machine, string LotNo, string Mode, string Verdict,
+        int MachinePanels, int FeedersUsed, int MinPanels, int MaxPanels, int LotPanels, int TallyBefore, int Delta,
+        bool WouldApply, bool Applied);
+
+    private const int TallyMinFeeders = 3;
+    /// <summary>Below this the difference is a panel in flight (feeders on an earlier head already placed for the
+    /// panel being built), not drift — never "correct" it back and forth.</summary>
+    public const int TallyMinDeltaPanels = 2;
+    private readonly Dictionary<int, TallySyncResult> _tallyLast = new();   // guarded by _gate
+    private readonly List<TallySyncResult> _tallyRecent = new();             // guarded by _gate
+
+    /// <summary>
+    /// Evaluate a machine's landed per-feeder pickup report against its board tally. The machine's panel count is
+    /// the MEDIAN of successful ÷ mount over its tracked feeders (<see cref="Pvs.Core.Inventory.MachineTally"/>).
+    /// A report from BEFORE the operator's per-lot reset (carrying the finished lot's count) is rejected as stale.
+    /// <c>shadow</c> records what it would correct and touches nothing; <c>apply</c> corrects the tally — and so
+    /// the feeders, by the difference only — through the SAME path as the operator's HMI sync (audited, persisted,
+    /// reversible). Accurate machines (|delta| &lt; <see cref="TallyMinDeltaPanels"/>) are left alone.
+    /// </summary>
+    public TallySyncResult? TallySyncFromMachine(int machine, IReadOnlyList<(int Feeder, long Successful)> pickups, string mode)
+    {
+        if (!_channels.TryGetValue(machine, out var ch)) return null;
+        var rows = new List<(int Feeder, long Successful, int MountPerPanel)>();
+        foreach (var p in pickups)
+        {
+            var fs = ch.Inventory.Get(p.Feeder);
+            if (fs is null || !fs.IsTracked) continue;
+            rows.Add((p.Feeder, p.Successful, fs.MountedPerBoard));
+        }
+        var est = Pvs.Core.Inventory.MachineTally.FromPickups(rows, TallyMinFeeders);
+        string lot; int lotPanels; bool lotTracked;
+        lock (_gate)
+        {
+            lot = _currentLotNo;
+            lotTracked = !string.IsNullOrWhiteSpace(lot) && _lotCountFor == lot;
+            lotPanels = lotTracked ? LotPanels() : 0;
+        }
+        int before = ch.Inventory.BoardsApplied;
+        int panels = est?.Panels ?? 0, delta = 0; bool would = false, applied = false; string verdict;
+        if (est is null) verdict = "too-few-feeders";
+        else if (!lotTracked) verdict = "no-lot";
+        else if (!Pvs.Core.Inventory.MachineTally.IsLotAligned(panels, lotPanels)) verdict = "stale";
+        else
+        {
+            delta = panels - before;
+            would = Math.Abs(delta) >= TallyMinDeltaPanels;
+            verdict = !would ? "aligned" : mode == "apply" ? "applied" : "would-apply";
+            if (would && mode == "apply")
+            {
+                int d = ch.Inventory.SyncToBoardCount(panels);
+                foreach (var f in ch.Inventory.Feeders.Where(f => f.IsTracked))
+                    _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now));
+                applied = true;
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineTallySync", machine, 0,
+                    $"M{machine} boards {before}->{panels} (delta {d}) from machine pickups", Supervisor: "machine (C1Z)",
+                    Quantity: panels, Overridden: true,
+                    Note: $"median of {est.FeedersUsed} feeders (successful ÷ mount), spread {est.MinPanels}-{est.MaxPanels}p", LotNo: lot));
+            }
+        }
+        var r = new TallySyncResult(DateTime.Now, machine, lot, mode, verdict, panels, est?.FeedersUsed ?? 0,
+            est?.MinPanels ?? 0, est?.MaxPanels ?? 0, lotPanels, before, delta, would, applied);
+        lock (_gate) { _tallyLast[machine] = r; _tallyRecent.Add(r); if (_tallyRecent.Count > 200) _tallyRecent.RemoveAt(0); }
+        if (verdict == "would-apply")
+            _log.LogWarning("C1Z tally SHADOW M{M}: machine {MP}p (median of {N} feeders, {Min}-{Max}p) vs PVS tally {T}p, lot {LP}p — would correct {D} panels (×mount per feeder). NOT applied.",
+                machine, panels, est!.FeedersUsed, est.MinPanels, est.MaxPanels, before, lotPanels, delta);
+        else if (verdict == "applied")
+            _log.LogWarning("C1Z tally APPLIED M{M}: machine {MP}p (median of {N} feeders) vs PVS tally {T}p — corrected {D} panels on the feeders.",
+                machine, panels, est!.FeedersUsed, before, delta);
+        else
+            _log.LogInformation("C1Z tally M{M}: {Verdict} — machine {MP}p, PVS tally {T}p, lot {LP}p, {N} feeders.",
+                machine, verdict, panels, before, lotPanels, est?.FeedersUsed ?? 0);
+        try
+        {
+            var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "tally-sync");
+            System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.AppendAllText(System.IO.Path.Combine(dir, $"tally-{DateTime.Now:yyyy-MM-dd}.log"),
+                $"{r.At:HH:mm:ss} M{machine} lot={lot} mode={mode} verdict={verdict} machine={panels}p feeders={r.FeedersUsed} spread={r.MinPanels}-{r.MaxPanels} pvs={before}p lotPanels={lotPanels} delta={delta}{Environment.NewLine}");
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "tally-sync log write failed."); }
+        return r;
+    }
+
+    /// <summary>Machine-tally sync state for /api/tallysync: last result per machine + recent history.</summary>
+    public object TallySyncState(string mode)
+    {
+        lock (_gate)
+            return new
+            {
+                mode, minDeltaPanels = TallyMinDeltaPanels, minFeeders = TallyMinFeeders, lotNo = _currentLotNo,
+                lotPanels = (!string.IsNullOrWhiteSpace(_currentLotNo) && _lotCountFor == _currentLotNo) ? LotPanels() : 0,
+                machines = _channels.OrderBy(k => k.Key).Select(k => new
+                {
+                    machine = k.Key, pvsTally = k.Value.Inventory.BoardsApplied,
+                    last = _tallyLast.TryGetValue(k.Key, out var t) ? t : null
+                }).ToList(),
+                recent = _tallyRecent.AsEnumerable().Reverse().Take(50).ToList()
+            };
+    }
+
     /// <summary>Per-machine board-out tally (PVS's own R0 count) + tracked-feeder count + whether a supervisor
     /// badge is required (only the PCB-out/last machine), for the monitor sync UI.</summary>
     public IReadOnlyList<(int Machine, int BoardsApplied, int TrackedFeeders, bool NeedsBadge)> MachineBoardCounts()
@@ -2185,6 +2297,7 @@ public sealed class SessionCoordinator : IDisposable
             _lotAnchorTotal = _m4PanelsTotal; _lotExtra = 0; _lotTarget = null;
         }
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);   // next lot starts its tally fresh (feeders untouched)
+        lock (_gate) _tallyLast.Clear();
         SaveLotProgress();
         _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels).", endedLot, badge.Name, boards, panels);
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotEnd", 0, 0,

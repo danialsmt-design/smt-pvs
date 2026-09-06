@@ -1429,17 +1429,23 @@ app.MapPost("/api/machine/readnow", async (LineService line, int? machine) =>
 app.MapGet("/api/setup", (LineService line) =>
 {
     var r = line.Reconciler;
-    return Results.Ok(new { autoC1z = r?.AutoC1z ?? true, autoC1m = r?.AutoC1m ?? true, ready = r is not null });
+    return Results.Ok(new { autoC1z = r?.AutoC1z ?? true, autoC1m = r?.AutoC1m ?? true, tallySync = r?.TallySyncMode ?? "off", ready = r is not null });
 });
 app.MapPost("/api/setup", (LineService line, SetupReq req) =>
 {
     var r = line.Reconciler;
-    if (r is null) return Results.Ok(new { message = "reconciler not ready", autoC1z = true, autoC1m = true });
+    if (r is null) return Results.Ok(new { message = "reconciler not ready", autoC1z = true, autoC1m = true, tallySync = "off" });
     if (req.AutoC1z is bool z) r.AutoC1z = z;
     if (req.AutoC1m is bool m) r.AutoC1m = m;
-    return Results.Ok(new { autoC1z = r.AutoC1z, autoC1m = r.AutoC1m,
-        message = $"Auto C1Z rotation {(r.AutoC1z ? "ON" : "OFF")} · Auto C1M reads {(r.AutoC1m ? "ON" : "OFF")}" });
+    if (req.TallySync is string t) r.TallySyncMode = t;
+    return Results.Ok(new { autoC1z = r.AutoC1z, autoC1m = r.AutoC1m, tallySync = r.TallySyncMode,
+        message = $"Auto C1Z rotation {(r.AutoC1z ? "ON" : "OFF")} · Auto C1M reads {(r.AutoC1m ? "ON" : "OFF")} · Machine-tally sync {r.TallySyncMode.ToUpperInvariant()}" });
 });
+
+// MACHINE-TALLY SYNC state: per machine, the last C1Z evaluation (machine's own panel count vs PVS's board tally)
+// + recent history. Read-only; the mode (off/shadow/apply) is set on /api/setup.
+app.MapGet("/api/tallysync", (LineService line) =>
+    Results.Ok(line.Coordinator?.TallySyncState(line.Reconciler?.TallySyncMode ?? "off") ?? new { mode = "off", machines = Array.Empty<object>() }));
 
 // LIVE SERIAL TRACE: the last TX/RX frames for one machine (send commands + decoded replies), for the real-time
 // serial log on the inventory page. Poll with ?after=<last seq> to fetch only new lines. Read-only.
@@ -1670,7 +1676,7 @@ record MachineSkipReq(int Machine, bool Skip, string Badge = "");
 record RestoreReelReq(string? Uid, string Badge = "");
 record AdoptReq(string Badge = "", int? Panels = null, int? Boards = null, bool Force = false);
 record MachineCountReq(int Machine, int Panels, string Badge = "");
-record SetupReq(bool? AutoC1z = null, bool? AutoC1m = null);
+record SetupReq(bool? AutoC1z = null, bool? AutoC1m = null, string? TallySync = null);
 record ScanReq(string Value);
 record ReelReq(string PartNumber, string Uid);
 record QtyReq(int Quantity);

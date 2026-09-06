@@ -308,6 +308,14 @@ public sealed class LineConfig
     /// See CounterReconcilerService.</summary>
     public bool AutoC1m { get; set; } = false;
 
+    /// <summary>Machine-tally sync from the machine's own per-feeder pickups (C1Z): on every landed report, the
+    /// machine's panel count (median of successful ÷ mount over its tracked feeders) is compared with PVS's own
+    /// board tally for that machine. <c>off</c> = nothing; <c>shadow</c> = log/record what it WOULD correct, touch
+    /// nothing; <c>apply</c> = correct the tally (and so the feeders) through the same path as the operator's HMI
+    /// sync. Runtime-togglable from the auto-reads page (persisted to auto-commands.json). Default off; L1 canary
+    /// runs shadow first. See SessionCoordinator.TallySyncFromMachine.</summary>
+    public string C1zTallySync { get; set; } = "off";
+
     /// <summary>
     /// APPLY the C1Z pickup model: snap each feeder's remaining to <c>start − attempted-since-load</c> on every
     /// capture and accumulate attrition as <c>VC − TC</c>, with the per-board decrement as the live fallback
