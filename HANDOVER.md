@@ -7,7 +7,7 @@ Git: branch `session-2026-09-03`, HEAD `ece6eb9`, working tree clean.
 ## ⚠️ Deployment matrix — READ BEFORE ANY DEPLOY
 | Line | Tailscale IP | Build | Notes |
 |---|---|---|---|
-| L1 | 100.69.81.105 | **latest + lot-end calibration (CANARY) + tally-reseed fix `ece6eb9`** | deployed 19:27 while idle (backup `_backup60906-192701`); lot `HC20799536000` running |
+| L1 | 100.69.81.105 | **latest + lot-end calibration (CANARY) + tally-reseed fix `ece6eb9`** | deployed 19:27 while idle (backup stamp `20260906-192701`); lot `HC20799536000` running |
 | L2 | 100.94.102.44 | latest **without** calibration | producing |
 | L3 | 100.105.64.115 | (unknown, no calibration assumed) | was DOWN; **answering over Tailscale 2026-09-06 19:05**, producing L311MBU — build still unconfirmed |
 | L4 | 100.82.187.65 | latest **without** calibration | often idle |
