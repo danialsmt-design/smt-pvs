@@ -1137,6 +1137,10 @@ public sealed class SessionCoordinator : IDisposable
         int? target = null;
         try { target = await _repo.GetLotTargetAsync(lot, ct); } catch { /* DB down — leave target null */ }
         lock (_gate) { _lotCountFor = lot; _lotSideFor = side; _lotAnchorTotal = _m4PanelsTotal; _lotExtra = 0; _lotTarget = target; }
+        // New run: every machine's per-lot board tally starts from zero. The lot-end recalc above may have just snapped
+        // the tally to the FINISHED lot's size; leaving it there inflates the next lot's usage check and would make a
+        // later HMI sync / lot-end recalc hand pieces BACK. Seeding never touches a feeder's remaining.
+        foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);
         SaveLotProgress();
         _log.LogInformation("Lot changed to {Lot}; target {Target} boards; board counter reset.", lot, target);
     }
@@ -2180,6 +2184,7 @@ public sealed class SessionCoordinator : IDisposable
             _currentLotNo = ""; _lotCountFor = ""; _lotSideFor = "";
             _lotAnchorTotal = _m4PanelsTotal; _lotExtra = 0; _lotTarget = null;
         }
+        foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);   // next lot starts its tally fresh (feeders untouched)
         SaveLotProgress();
         _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels).", endedLot, badge.Name, boards, panels);
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotEnd", 0, 0,
