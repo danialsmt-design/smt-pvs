@@ -96,8 +96,8 @@ public sealed class AlertConfig
     public double PickupAlertRatePct { get; set; } = 99.8;
     /// <summary>Minimum attempted pickups (VC) before a feeder can raise a pickup-rate alert. Default 1000.</summary>
     public int PickupAlertMinPicks { get; set; } = 1000;
-    /// <summary>WhatsApp recipients for the pickup-rate alert (comma-separated). Default: Raja Rao + Danish.</summary>
-    public string PickupAlertRecipients { get; set; } = "60163327003,60122445237";
+    /// <summary>WhatsApp recipients for the pickup-rate alert (comma-separated). Default: Raja Rao + Danish + Rezman.</summary>
+    public string PickupAlertRecipients { get; set; } = "60163327003,60122445237,60126816059";
 }
 
 public sealed class BadgeConfig
