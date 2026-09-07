@@ -481,10 +481,12 @@ public sealed class SessionCoordinator : IDisposable
             Model = product;
             Side = side;
             _autoModel = false;   // a manual (or auto) select; AutoDetect re-flags it afterwards
-            // Cache this model+side's feeder map (from ProductBOM) so it can be re-populated offline later.
-            _feederMaps[MapKey(productId, side)] = _expected
-                .Select(kv => new ModelCacheFeeder(kv.Key.machine, kv.Key.feeder, kv.Value,
-                    _expectedQty.TryGetValue(kv.Key, out var q) ? q : 0)).ToList();
+            // Cache this model+side's feeder map (from ProductBOM) so it can be re-populated offline later — the DB
+            // read itself, never the manual/skipped-filtered _expected (that wrote a pen-drive list or a map missing
+            // a skipped machine into the offline cache; audit H3/M7).
+            _feederMaps[MapKey(productId, side)] = fresh
+                .Select(kv => new ModelCacheFeeder(kv.Key.Item1, kv.Key.Item2, kv.Value,
+                    freshQty.TryGetValue(kv.Key, out var q) ? q : 0)).ToList();
             SaveModelCache();      // remember the model + feeder map so a restart isn't stuck with no model
             SaveFeederMapCache();  // persist the per-model feeder map for offline model selection
             // If a check is in progress, refresh ITS checklist from the updated map (mid-check ProductBOM amendment)
@@ -1340,12 +1342,23 @@ public sealed class SessionCoordinator : IDisposable
     private static string ManualFeedersPath => System.IO.Path.Combine(AppContext.BaseDirectory, "manual-feeders.json");
 
     /// <summary>Rebuild _expected from the loaded manual feeder maps (skipped machines excluded). Caller holds the
-    /// lock. Manual feeders carry no per-board qty, so they are untracked for the live exhaust forecast — the
-    /// verification list and the Canon-BOM total are what matter during a breakdown.</summary>
+    /// lock. A machine WITH a pen-drive list uses that list (no per-board qty → 1 placement × panels). A usable
+    /// machine WITHOUT one keeps the DB map for the current model/side (from the per-model cache) — a pen-drive
+    /// load is one file per machine, so between files the list must not shrink to the machines loaded so far:
+    /// that starved the live inventory of every other machine and, with off-list auto-unload, would have taken
+    /// their reels off the feeders. (Audit finding H3, 2026-09-07.) A machine the supervisor has SKIPPED
+    /// contributes nothing either way.</summary>
     private void RebuildExpectedFromManual()
     {
         _expected.Clear();
         _expectedQty.Clear();
+        if (Model is not null && _feederMaps.TryGetValue(MapKey(Model.ProductId, Side ?? "A"), out var dbMap))
+            foreach (var f in dbMap)
+            {
+                if (!IsUsableMachine(f.Machine) || _manualFeeders.ContainsKey(f.Machine)) continue;
+                _expected[(f.Machine, f.Feeder)] = f.Part;
+                if (f.QtyPerUnit > 0) _expectedQty[(f.Machine, f.Feeder)] = f.QtyPerUnit;
+            }
         foreach (var (machine, entries) in _manualFeeders)
         {
             if (!IsUsableMachine(machine)) continue;
@@ -1358,7 +1371,7 @@ public sealed class SessionCoordinator : IDisposable
     /// is allowed, config or not. A file whose declared Cell differs from the chosen machine is refused with
     /// CELL-MISMATCH unless <paramref name="force"/> says the supervisor meant it (that choice is audited).
     /// Overrides the DB for that machine until Reload-from-DB.</summary>
-    public string LoadManualFeeders(int machine, string csv, Badge badge, bool force = false)
+    public async Task<string> LoadManualFeedersAsync(int machine, string csv, Badge badge, bool force = false, CancellationToken ct = default)
     {
         if (!badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to load a feeder list.";
         if (machine < 1 || machine > MaxMachine) return $"Machine {machine} is out of range (1-{MaxMachine}).";
@@ -1377,6 +1390,9 @@ public sealed class SessionCoordinator : IDisposable
             RebuildExpectedFromManual();
         }
         SaveManualFeeders();
+        // The list changed → the live inventory must follow it NOW (it is only ever built in RefreshInventoryAsync);
+        // otherwise the old feeders keep decrementing / forecasting / syncing until the next baseline. (Audit H3)
+        try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory refresh after manual feeder load failed."); }
         string note = declared is int d && d != machine ? $"pen-drive CSV (Cell {d} -> M{machine})" : "pen-drive CSV";
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualFeederLoad", entries.Count, 0,
             $"M{machine}: {label}", Supervisor: badge.Name, Overridden: true, Note: note, LotNo: _currentLotNo));
@@ -1409,6 +1425,9 @@ public sealed class SessionCoordinator : IDisposable
         // DB mode: re-select the model so _expected is rebuilt without (or with) the machine. Manual mode already
         // rebuilt from the pen-drive lists above.
         if (!manual && model is not null) await SelectModelAsync(model.ProductId, side, ct);
+        // Live inventory follows the new list immediately (a skipped machine's feeders stop decrementing and leave
+        // the exhaust card now, not at the next baseline). (Audit H3)
+        try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory refresh after machine skip failed."); }
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, skip ? "MachineSkip" : "MachineUnskip", 0, 0,
             $"M{machine}", Supervisor: badge.Name, Overridden: true,
             Note: skip ? "machine not running this lot" : "machine back in the line", LotNo: _currentLotNo));
@@ -2457,13 +2476,15 @@ public sealed class SessionCoordinator : IDisposable
 
         bool needQty = false; string? qUid = null, qPart = null; int qFeeder = 0, qMachine = 0;
         bool needChangeQty = false; string? cUid = null, cPart = null; int cFeeder = 0;
-        int? rM = null, rF = null; bool isPartsChange = false;
+        int? rM = null, rF = null; bool accepted = false;
         lock (_gate)
         {
             _lastActivity = DateTime.Now;
-            // capture the feeder this reel is going onto (before the scan advances the cursor)
-            if (_change is { State: ChangeState.AwaitingNewReel } cc) { rM = cc.Machine; rF = cc.Feeder; isPartsChange = true; }
-            else if (_scan is { State: FullScanState.Scanning } sc) { rM = sc.Current?.Machine; rF = sc.Current?.Feeder; }
+            // capture the feeder this reel is going onto (before the scan advances the cursor) — CHECK scans only.
+            // A parts-change commits its mapping (and retires the outgoing reel) on COMPLETION, in MaybeFinalizeAsync:
+            // doing it here mapped the new reel and zeroed the old reel's StockOut on ANY scan in AwaitingNewReel,
+            // even one the session then interlocked and the operator cancelled. (Audit finding H5, 2026-09-07.)
+            if (_scan is { State: FullScanState.Scanning } sc) { rM = sc.Current?.Machine; rF = sc.Current?.Feeder; }
             else if (_modelChange is { State: ModelChangeState.Scanning } mc0) { rM = mc0.Current?.Machine; rF = mc0.Current?.Feeder; }
 
             if (_change is not null)
@@ -2473,29 +2494,27 @@ public sealed class SessionCoordinator : IDisposable
                 if (_change.State == ChangeState.AwaitingQuantity)
                 { needChangeQty = true; cUid = _change.NewReelUid; cPart = _change.NewReelPart; cFeeder = _change.Feeder; }
             }
-            else if (_scan is not null) _lastMessage = _scan.ScanReel(partNumber, uid).Message;
+            else if (_scan is not null)
+            {
+                var st = _scan.ScanReel(partNumber, uid); _lastMessage = st.Message;
+                accepted = st.Outcome is StepOutcome.Ok or StepOutcome.Completed;
+            }
             else if (_recount is not null) _lastMessage = _recount.ScanReel(partNumber, uid).Message;
             else if (_modelChange is not null)
             {
-                _lastMessage = _modelChange.ScanReel(partNumber, uid).Message;
+                var st = _modelChange.ScanReel(partNumber, uid); _lastMessage = st.Message;
+                accepted = st.Outcome is StepOutcome.Ok or StepOutcome.Completed;
                 if (_modelChange.State == ModelChangeState.ConfirmingQty && _modelChange.Current is { } cur)
                 { needQty = true; qUid = cur.ReelUid; qPart = cur.ScannedPart; qFeeder = cur.Feeder; qMachine = cur.Machine; }
             }
             else _lastMessage = "No task in progress.";
         }
 
-        // A parts-change swaps a reel OFF this feeder — capture the OUTGOING reel before we overwrite the mapping,
-        // so a spent remnant can be auto-retired (zero its StockOut + record it) once the swap is committed.
-        Pvs.LineApp.Inventory.FeederReel? retiring = null;
-        if (isPartsChange && rM is int rmO && rF is int rfO)
-        {
-            var prev = _reels.Get(rmO, rfO);
-            if (prev is not null && !string.IsNullOrWhiteSpace(prev.Uid)
-                && !string.Equals(prev.Uid.Trim(), uid?.Trim(), StringComparison.OrdinalIgnoreCase))
-                retiring = prev;
-        }
-        // Remember which reel is now on that feeder (for the machine-inventory view).
-        if (rM is int rm && rF is int rf) _reels.Set(rm, rf, partNumber, uid);
+        // Remember which reel is now on that feeder — ONLY when the check ACCEPTED the scan (a wrong-part interlock
+        // used to map the wrong reel anyway), and a UID lives on ONE feeder: the same reel remembered elsewhere is a
+        // stale mapping (moved reel / earlier mis-scan) that would otherwise be decremented and StockOut-synced
+        // twice. (Audit finding H4, 2026-09-07.)
+        if (accepted && rM is int rm && rF is int rf) CommitReelMapping(rm, rf, partNumber, uid);
 
         // Part matched on a model change — resolve the reel's current remaining qty to show the operator.
         // Prefer the LOCAL record (tracked remaining); StockOuts issued qty only for a new/unrecorded reel.
@@ -2530,9 +2549,24 @@ public sealed class SessionCoordinator : IDisposable
             }
         }
         await MaybeFinalizeAsync(ct);
-        if (retiring is not null) await RetireOutgoingReelAsync(retiring, retiring.Machine, retiring.Feeder, ct);
         SaveScanProgress();
         return Snapshot();
+    }
+
+    /// <summary>Map a reel to a feeder, displacing the same UID from any other feeder and stopping its live tracking
+    /// there (the reel is physically HERE). Logged + audited when something was displaced.</summary>
+    private void CommitReelMapping(int machine, int feeder, string part, string uid)
+    {
+        var displaced = _reels.SetUnique(machine, feeder, part, uid);
+        foreach (var d in displaced)
+        {
+            if (_channels.TryGetValue(d.Machine, out var dch)) dch.Inventory.UnloadReel(d.Feeder);
+            _log.LogWarning("Reel {Uid} ({Part}) scanned onto M{M} F{F} — it was still remembered on M{DM} F{DF}; that stale mapping is dropped (a reel is on one feeder).",
+                uid, part, machine, feeder, d.Machine, d.Feeder);
+            Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ReelMoved", d.Machine, d.Feeder,
+                "stale mapping dropped", NewReelUid: uid, NewReelPart: part,
+                Note: $"UID now on M{machine} F{feeder}; was remembered on M{d.Machine} F{d.Feeder}", LotNo: _currentLotNo));
+        }
     }
 
     /// <summary>A reel swapped OFF a feeder during a parts-change is CONSUMED — a parts-change happens because the
@@ -2825,11 +2859,23 @@ public sealed class SessionCoordinator : IDisposable
         VerificationRecord? rec = null;
         bool rebaseline = false;
         bool checkDone = false;
+        Pvs.LineApp.Inventory.FeederReel? retiring = null;
         lock (_gate)
         {
             if (_change is { State: ChangeState.Complete or ChangeState.Skipped } c)
             {
                 bool completed = c.State == ChangeState.Complete;
+                // COMMIT the swap only now that it is complete: capture the OUTGOING reel (for auto-retire), then
+                // remember the new reel on the feeder. A skipped/cancelled change ("false alarm") commits nothing —
+                // the old reel stays mapped and is NOT retired. (Audit finding H5.)
+                if (completed && !string.IsNullOrWhiteSpace(c.NewReelUid))
+                {
+                    var prev = _reels.Get(c.Machine, c.Feeder);
+                    if (prev is not null && !string.IsNullOrWhiteSpace(prev.Uid)
+                        && !string.Equals(prev.Uid.Trim(), c.NewReelUid.Trim(), StringComparison.OrdinalIgnoreCase))
+                        retiring = prev;
+                    CommitReelMapping(c.Machine, c.Feeder, c.NewReelPart ?? c.ExpectedPart ?? "", c.NewReelUid);
+                }
                 rec = new VerificationRecord(
                     DateTime.Now, _config.LineName, "PartsChange", c.Machine, c.Feeder,
                     completed ? (c.WasOverridden ? "Released" : "Completed") : "Skipped",
@@ -2883,6 +2929,7 @@ public sealed class SessionCoordinator : IDisposable
         }
         if (checkDone) SaveCheckStatus();   // persist the completion so the monitor's GREEN survives an app restart
         if (rec is not null) await _records.WriteAsync(rec, ct);
+        if (retiring is not null) await RetireOutgoingReelAsync(retiring, retiring.Machine, retiring.Feeder, ct);
         if (rebaseline) { try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory rebaseline after check failed."); } }
     }
 

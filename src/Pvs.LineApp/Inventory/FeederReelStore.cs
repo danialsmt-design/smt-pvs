@@ -34,6 +34,25 @@ public sealed class FeederReelStore
         }
     }
 
+    /// <summary>Record the reel now on a feeder AND forget the same UID anywhere else: a reel is physically on ONE
+    /// feeder, so a UID that was remembered on another feeder (a moved reel, or an earlier mis-scan) is a stale
+    /// mapping. Returns the mappings that were displaced (so the caller can stop tracking them live).</summary>
+    public IReadOnlyList<FeederReel> SetUnique(int machine, int feeder, string part, string uid)
+    {
+        if (string.IsNullOrWhiteSpace(uid)) return Array.Empty<FeederReel>();
+        var u = uid.Trim();
+        lock (_gate)
+        {
+            var displaced = _map.Values
+                .Where(r => (r.Machine != machine || r.Feeder != feeder) && string.Equals(r.Uid, u, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var d in displaced) _map.Remove((d.Machine, d.Feeder));
+            _map[(machine, feeder)] = new FeederReel(machine, feeder, (part ?? "").Trim(), u, DateTime.Now);
+            Save();
+            return displaced;
+        }
+    }
+
     /// <summary>The reel remembered on a feeder, or null.</summary>
     public FeederReel? Get(int machine, int feeder)
     {

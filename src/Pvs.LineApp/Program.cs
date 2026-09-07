@@ -906,7 +906,7 @@ app.MapGet("/api/feeders/manual/status", (LineService line) =>
 app.MapPost("/api/feeders/manual", async (LineService line, IReelPartRepository repo, ManualFeederReq req) =>
 {
     var badge = await repo.FindBadgeAsync(req.Badge ?? "") ?? new Pvs.Core.People.Badge("?", req.Badge ?? "", "");
-    return Results.Ok(new { message = line.Coordinator!.LoadManualFeeders(req.Machine, req.Csv ?? "", badge, req.Force) });
+    return Results.Ok(new { message = await line.Coordinator!.LoadManualFeedersAsync(req.Machine, req.Csv ?? "", badge, req.Force) });
 });
 // Supervisor takes a machine out of this run (bypassed cell / mounter down) or puts it back — its feeders leave
 // or rejoin the checklist. Same badge gate as the feeder-list load.
@@ -1095,7 +1095,13 @@ app.MapGet("/api/currentmodel", (LineService line) => Results.Ok(new
 
 // Internal re-pull of a model's feeder map (used by "Refresh from DB"); does NOT pin a manual override.
 app.MapPost("/api/model", async (LineService line, ModelReq req) =>
-    Results.Ok(new { message = await line.Coordinator!.SelectModelAsync(req.ProductId, req.Side) }));
+{
+    // "Refresh from DB": re-read the feeder list, then re-baseline so the live inventory follows an amended BOM
+    // immediately (audit H3 — it used to keep the old feeders until the next baseline).
+    var msg = await line.Coordinator!.SelectModelAsync(req.ProductId, req.Side);
+    try { await line.Coordinator.RefreshInventoryAsync(); } catch { /* baseline failure must not fail the select */ }
+    return Results.Ok(new { message = msg });
+});
 
 // Supervisor pins the running model from the dropdown (badge-gated); PVS verifies it against the machine.
 app.MapPost("/api/model/manual", async (LineService line, ModelManualReq req) =>

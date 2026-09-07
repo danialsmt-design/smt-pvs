@@ -93,6 +93,18 @@ public sealed class MachineInventory
     /// <summary>The exhaust-accuracy sample for a feeder right now: how many boards this reel has run, the pieces
     /// PVS still THINKS remain (the error at a genuine parts-out — ideally ~0), its start qty and per-board rate.
     /// Read at a parts-out to learn whether the reel emptied earlier/later than predicted. Null if not tracked.</summary>
+    /// <summary>Take the reel OFF a configured feeder: no UID, no balance, not tracked — the feeder stays on the
+    /// list (it is still expected) but decrements nothing until a reel is scanned on. Used when a scan proves the
+    /// reel is physically elsewhere (the same UID was just scanned onto another feeder). No-op if not configured.</summary>
+    public void UnloadReel(int feeder)
+    {
+        lock (_lock)
+        {
+            if (!_feeders.TryGetValue(feeder, out var f)) return;
+            f.ReelUid = null; f.Remaining = 0; f.StartQty = 0; f.LoadBoards = _boardsApplied; f.IsTracked = false;
+        }
+    }
+
     public (int BoardsThisReel, int Remaining, int StartQty, int MountedPerBoard, string Part, string? ReelUid)? ReelUsage(int feeder)
     {
         lock (_lock)
