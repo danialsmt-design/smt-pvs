@@ -1663,28 +1663,33 @@ public sealed class SessionCoordinator : IDisposable
             if (qty is int q && q > 0) ch.Inventory.LoadReel(f.Feeder, reel.Uid, q);
         }
 
-        // EVERY LOADED FEEDER MUST DECREMENT (Danial: a reel ON a feeder is PRODUCTION — nothing to do with the BOM;
-        // if the machine has a reel loaded on a feeder, track it). The loop above only covered the model's BOM
-        // feeders; here we ground ANY OTHER loaded reel (from the feeder-reel store = what was actually scanned onto
-        // the machine) so no loaded feeder is ever left un-counted ("—"). Qty = StockOut by UID (same as above);
-        // per-board rate = 1 placement × the panel factor (no BOM lookup — a loaded feeder places into each board).
+        // OFF-LIST REELS ARE UNLOADED AUTOMATICALLY (Danial, 2026-09-07: "if the parts are not on the feeder list for
+        // each machine they should not be decremented; all feeders which are not on the current selected model should
+        // unload automatically, and should not be in the exhaust card"). A reel still mapped to a feeder that the
+        // selected model/side does not use is a leftover from an earlier run: the machine is not picking from it, so
+        // grounding it at 1 × panels per cycle drained its count for nothing and forecast phantom run-outs (L1: 24 of
+        // 56 exhaust rows / 16 parts on 2026-09-07). Take it off the mapping (reversible backup; remainder kept by
+        // UID; StockOut untouched) and never configure it into the live inventory — so it is not decremented, not on
+        // the exhaust card, not in the usage check. (This REPLACES the earlier "every loaded feeder must decrement"
+        // grounding for feeders outside the list.) Manual pen-drive feeder lists are honoured: _expected already is one.
         var covered = new HashSet<(int, int)>(feeders.Select(f => (f.Machine, f.Feeder)));
+        var offList = _reels.All().Where(r => !covered.Contains((r.Machine, r.Feeder)) && !string.IsNullOrWhiteSpace(r.Uid))
+                                  .Select(r => (r.Machine, r.Feeder)).ToList();
         int extra = 0;
-        foreach (var reel in _reels.All())
+        if (offList.Count > 0)
         {
-            if (covered.Contains((reel.Machine, reel.Feeder))) continue;
-            if (string.IsNullOrWhiteSpace(reel.Uid)) continue;
-            if (!_channels.TryGetValue(reel.Machine, out var ch2)) continue;
-            ch2.Inventory.Configure(reel.Feeder, reel.Part, 1 * panels);   // 1 per board × panels; no BOM rate needed
-            int? q2 = null;
-            try { q2 = await _repo.FindStockOutQtyAsync(reel.Uid, reel.Part, ct); } catch { q2 = null; }
-            if (q2 is null)
+            var removed = _reels.RemoveOffList(offList);
+            extra = removed.Count;
+            foreach (var r in removed)
             {
-                var loc2 = _remaining.Get(reel.Machine, reel.Feeder);
-                if (loc2 is not null && string.Equals(loc2.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
-                    q2 = loc2.Remaining;
+                var loc = _remaining.Get(r.Machine, r.Feeder);
+                int rem = (loc is not null && string.Equals(loc.Uid?.Trim(), r.Uid.Trim(), StringComparison.OrdinalIgnoreCase)) ? loc.Remaining : -1;
+                _log.LogWarning("AUTO-UNLOAD M{M} F{F} {Part} ({Uid}): not on the {Model} ({Side}) feeder list — taken off the feeder (remainder {Rem} kept by UID; StockOut untouched).",
+                    r.Machine, r.Feeder, r.Part, r.Uid, model.Name, side, rem < 0 ? "?" : rem.ToString());
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "AutoUnload", r.Machine, r.Feeder,
+                    "off-list reel unloaded", Note: $"{r.Part} {r.Uid} not on {model.Name} {side} feeder list; remaining {(rem < 0 ? "?" : rem.ToString())} kept by UID",
+                    LotNo: _currentLotNo));
             }
-            if (q2 is int qq && qq > 0) { ch2.Inventory.LoadReel(reel.Feeder, reel.Uid, qq); extra++; }
         }
 
         // Re-anchor each machine's board tally to the lot's board count so a restart / re-baseline doesn't zero it
@@ -1694,7 +1699,7 @@ public sealed class SessionCoordinator : IDisposable
         int seed; lock (_gate) seed = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal));
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(seed);
 
-        _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} BOM feeders + {X} other loaded feeders; board tally seeded at {Seed}.", model.Name, side, feeders.Count, extra, seed);
+        _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}.", model.Name, side, feeders.Count, extra, seed);
         await RefreshLotCoverageAsync(ct);   // pull issued-per-part for this lot/side (material coverage warning)
     }
 

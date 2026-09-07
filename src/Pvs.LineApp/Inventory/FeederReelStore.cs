@@ -73,6 +73,30 @@ public sealed class FeederReelStore
         }
     }
 
+    /// <summary>Sibling file holding the reels taken off by the last AUTOMATIC off-list unload (for reference / manual redo).</summary>
+    private string AutoUnloadBackupPath => _path + ".auto-unload-backup.json";
+
+    /// <summary>
+    /// AUTOMATIC off-list unload: take the given feeders' reels off the mapping (they are not on the selected
+    /// model's feeder list, so the machine is not picking from them). Snapshot the removed reels to a sibling
+    /// backup, then remove ONLY those keys — everything on the feeder list stays loaded. Quantity is NOT stored
+    /// or changed here; each reel keeps its remaining by UID. Returns the reels removed (may be empty).
+    /// </summary>
+    public IReadOnlyList<FeederReel> RemoveOffList(IEnumerable<(int Machine, int Feeder)> keys)
+    {
+        lock (_gate)
+        {
+            var removed = new List<FeederReel>();
+            foreach (var k in keys)
+                if (_map.Remove((k.Machine, k.Feeder), out var r)) removed.Add(r);
+            if (removed.Count == 0) return removed;
+            removed = removed.OrderBy(r => r.Machine).ThenBy(r => r.Feeder).ToList();
+            try { File.WriteAllText(AutoUnloadBackupPath, JsonSerializer.Serialize(removed)); } catch { /* best-effort reference copy */ }
+            Save();
+            return removed;
+        }
+    }
+
     /// <summary>Reverse the last unload: re-load the feeder→reel mapping from the saved backup. Returns the reels
     /// restored (empty when there is no backup to restore from).</summary>
     public IReadOnlyList<FeederReel> RestoreLastUnload()
