@@ -16,12 +16,13 @@ Git: branch `session-2026-09-03`, HEAD `76684a2`+, working tree clean.
 | Line | Tailscale IP | Build | Notes |
 |---|---|---|---|
 | L1 | 100.69.81.105 | **ROBOT build `publish/l1-robot-20260907-1655` = commit `d2c3d7a` deployed 2026-09-07 16:57 while idle (backup `20260907-165711`); live box config gained `"robot": {"dispatcherUrl": "http://192.168.0.169:8090"}` (backup `line.config.json.bak-robot-20260907-165627`); 🤖 Call-robot button live, L1→NAS→robot verified; L1 Ethernet is now 192.168.0.165 (Wi-Fi .105).** Previously: latest + lot-end calibration (CANARY) + tally-reseed `ece6eb9` + machine-tally sync `48f7e44` (SHADOW) + PO-all-lots `ee33b51` + AUTO-UNLOAD off-list reels `17f01c3` + audit fixes H1/H2/H8 `aebaa24` + H3/H4/H5 `53fa164` + H6/H7/H9 `cba0283` + shift clock/rolling downtime `bf8f0f8` + feeder-list placement count `76684a2`** | deployed 2026-09-07 14:13 between lots (backup stamp `20260907-141335`); box `shiftTimes` = 07:35/19:35; **pen-drive list retired** (`manual-feeders.json.bak-pendrive-*`) → DB feeder list live (32 feeders, with counts); lot ended, next lot not yet picked. All 9 HIGH + M1/M3/M5/M7 + F5 fixed. |
-| L2 | 100.94.102.44 | latest **without** calibration | producing |
-| L3 | 100.105.64.115 | (unknown, no calibration assumed) | was DOWN; **answering over Tailscale 2026-09-06 19:05**, producing L311MBU — build still unconfirmed |
-| L4 | 100.82.187.65 | latest **without** calibration | often idle |
-| L5 | 100.101.8.76 | latest **without** calibration | the "thousands-off drift" line (unscanned reel swaps) |
+| L2 | 100.94.102.44 | latest **without** calibration — **robot build `d2c3d7a` ARMED via idle watcher 2026-09-07 17:35** (scratchpad `deploy-when-idle-L2L3.ps1`, log `publish/l1-robot-20260907-1655/deploy-when-idle-L2L3.log`); box config already has `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`) | producing L311 A (lot HC20799537000) at 17:26 |
+| L3 | 100.105.64.115 | (unknown) — **robot build `d2c3d7a` ARMED via the same idle watcher 2026-09-07 17:35**; box config already has `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`) | producing L264 B (lot HC20800275000, just started) at 17:26 |
+| L4 | 100.82.187.65 | **robot build `d2c3d7a` deployed 2026-09-07 17:34 while idle (backup `20260907-173437`)**; box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`); 4/4 online, robot proxy OK | lot HC20799539000 finished 600/600 at 16:48 |
+| L5 | 100.101.8.76 | **robot build `d2c3d7a` deployed 2026-09-07 17:34 while parked (backup `20260907-173451`)**; box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`); M2–M4 were already off, robot proxy OK | the "thousands-off drift" line (unscanned reel swaps) |
 
-**Rule:** a full redeploy to L2–L5 would spread the L1 canary calibration and break the trial.
+**Canary ENDED 2026-09-07 (Danial: "deploy all line"):** every line now gets the same build `d2c3d7a` (calibration + auto-unload + shift clock + robot). Rule that stays: deploy only when the line is idle (board rate 0 / no board for minutes), never mid-lot.
+**Danial 2026-09-07: "don't use SMB, we have direct access thru Tailscale or LAN"** — config edits go through WinRM `Invoke-Command`/`Copy-Item -ToSession`, not `\ip\C$`. NOTE `deploy-pvs.ps1` still copies the publish set over SMB internally — ask him whether to rewrite it.
 For recipient/config-only changes use a **live config-edit + restart**, NOT `deploy-pvs.ps1`.
 
 Pickup-alert recipients **LIVE = Raja (60163327003) + Danish (60122445237)**. Rezman
