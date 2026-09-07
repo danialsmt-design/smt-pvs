@@ -1,6 +1,7 @@
 {
   "lineId": 1,
   "lineName": "DEV (this PC) — no DB, no serial",
+  "robot": { "dispatcherUrl": "http://localhost:8091" },
   "shiftTimes": [
     { "name": "Morning", "start": "07:35", "end": "19:35" },
     { "name": "Night", "start": "19:35", "end": "07:35" }

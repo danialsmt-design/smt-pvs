@@ -100,6 +100,15 @@ public sealed class AlertConfig
     public string PickupAlertRecipients { get; set; } = "60163327003,60122445237,60126816059";
 }
 
+/// <summary>The delivery robot. PVS never talks to the robot itself: it asks the MCS dispatcher on the NAS (the
+/// single writer to the robot) to send it to THIS line's taught delivery point, and shows the operator where it is.</summary>
+public sealed class RobotConfig
+{
+    /// <summary>MCS app base URL, e.g. "http://192.168.0.169:8090". Empty = no robot button on this line.</summary>
+    public string DispatcherUrl { get; set; } = "";
+    public bool Enabled => !string.IsNullOrWhiteSpace(DispatcherUrl);
+}
+
 public sealed class BadgeConfig
 {
     /// <summary>Reserved prefix that distinguishes a badge UID from a reel UID (interim: "9999").</summary>
@@ -229,6 +238,8 @@ public sealed class LineConfig
     public ForecastConfig Forecast { get; set; } = new();
     public CentralConfig Central { get; set; } = new();
     public AlertConfig Alerts { get; set; } = new();
+    /// <summary>Delivery robot: where the MCS dispatcher lives. Empty = feature hidden on this line.</summary>
+    public RobotConfig Robot { get; set; } = new();
     /// <summary>Carry-over/incomplete lots (PO numbers) to FORCE into this line's manual lot dropdown even though
     /// they fall outside the normal 7-day window — e.g. a July lot whose B-side was never run. Still gated to the
     /// selected model + a non-Delivered status, so it only ever surfaces the exact POs listed here.</summary>

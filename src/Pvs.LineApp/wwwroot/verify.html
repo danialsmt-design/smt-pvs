@@ -401,6 +401,8 @@
       <button id="toolsToggle" class="chk" onclick="toggleTools()">⚙ Checks &amp; tools ▸</button>
       <button id="dtBtn" onclick="openStop()">⏱ Line stop</button>
       <span id="dtChip" class="dtchip" style="display:none" onclick="openStop()"></span>
+      <button id="robotBtn" onclick="callRobot()" style="display:none" title="Ask the delivery robot to come to this line">🤖 Call robot / ရိုဘော့ခေါ်</button>
+      <span id="robotChip" class="dtchip" style="display:none" onclick="robotChipTap()"></span>
       <a class="setuplink" href="/setup.html" style="margin-left:auto">⚙ Model &amp; lot →</a>
     </div>
     <div class="row" id="toolsWrap" style="gap:10px;display:none;margin-top:8px;flex-wrap:wrap">
@@ -1162,6 +1164,38 @@ setInterval(()=>{ if(stopState && stopState.down){ stopState.openSeconds++; rend
 let healthOpen=false;
 const H_SIG=[['serial','Serial link / စီရီယယ်'],['producing','Producing / ထုတ်နေ'],['program','Program / ပရိုဂရမ်'],['check','Shift check / အလှည့်စစ်'],['db','DB link / DB'],['downtime','Downtime / ရပ်ချိန်']];
 function toggleHealth(){ healthOpen=!healthOpen; $('healthPop').classList.toggle('show',healthOpen); }
+// ---- Delivery robot (through the MCS dispatcher on the NAS) ----
+let robotSt=null;
+function robotWho(){ const n=($('opName').textContent||'').trim(); return n||''; }
+async function refreshRobot(){
+  let s; try{ s=await (await fetch('/api/robot/status')).json(); }catch(e){ return; }
+  robotSt=s; const btn=$('robotBtn'), chip=$('robotChip');
+  if(!s || s.enabled===false){ btn.style.display='none'; chip.style.display='none'; return; }
+  btn.style.display='';
+  let txt='', cls='dtchip';
+  if(!s.reachable){ txt='🤖 '+(s.state||'robot offline'); cls+=' off'; }
+  else if(s.myJob){
+    const j=s.myJob, st=String(j.status||'').toLowerCase();
+    if(st==='arrived'){ txt='🤖 ROBOT AT LINE — tap when unloaded / ရိုဘော့ရောက်ပြီ'; cls+=' on'; }
+    else if(st==='moving'){ txt='🤖 robot on the way'+(s.nav&&s.nav.distToGoal>0?' · '+s.nav.distToGoal.toFixed(0)+' m':''); }
+    else { txt='🤖 robot queued'+(s.ahead>0?' · '+s.ahead+' ahead':''); }
+  } else if(s.state){ txt='🤖 '+s.state+(s.battery!=null?' · '+s.battery+'%':''); }
+  chip.textContent=txt; chip.className=cls; chip.style.display=txt?'':'none';
+  btn.disabled=!!(s.myJob);
+}
+async function callRobot(){
+  const r=await api('/api/robot/call',{by:robotWho(),reason:''});
+  $('ctlMsg').textContent=r.message||(r.ok?'robot called':(r.error||'robot call failed'));
+  refreshRobot();
+}
+async function robotChipTap(){
+  if(robotSt&&robotSt.myJob&&String(robotSt.myJob.status).toLowerCase()==='arrived'){
+    const r=await api('/api/robot/done',{by:robotWho()}); $('ctlMsg').textContent=r.message||'';
+    refreshRobot();
+  }
+}
+setInterval(refreshRobot, 3000); refreshRobot();
+
 async function refreshHealth(){
   let h; try{ h=await (await fetch('/api/health')).json(); }catch(e){ return; }
   const st=h.status||'idle', pill=$('healthPill');

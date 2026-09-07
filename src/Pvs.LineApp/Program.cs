@@ -69,6 +69,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<Pvs.LineApp.Runtim
 // Holds the reels an operator has scanned during a standby-reel check (in-memory; no DB writes).
 builder.Services.AddSingleton<Pvs.LineApp.Runtime.StandbyScanState>();
 builder.Services.AddSingleton<Pvs.LineApp.Runtime.BoardInputState>();
+// Delivery robot: a thin caller to the MCS dispatcher on the NAS (the single writer to the robot). Inert when
+// robot.dispatcherUrl is empty in this line's config.
+builder.Services.AddSingleton(new Pvs.LineApp.Runtime.RobotCaller(lineConfig.Robot.DispatcherUrl));
 
 var app = builder.Build();
 
@@ -1483,6 +1486,31 @@ app.MapPost("/api/lot/end", async (LineService line, BadgeReq req) =>
 
 // Downtime capture: live state for the operator screen (open reason + elapsed, and whether the line is
 // stopped-producing so the UI can raise the prompt) and per-cell open recoveries.
+// ---- Delivery robot (via the MCS dispatcher; PVS never addresses the robot directly) ----
+// Operator taps "Call robot": the dispatcher sends it to this line's taught delivery point (or queues it).
+app.MapPost("/api/robot/call", async (LineService line, Pvs.LineApp.Runtime.RobotCaller robot, RobotReq? req) =>
+{
+    if (!robot.Enabled) return Results.Ok(new { ok = false, message = "robot not configured on this line" });
+    var by = string.IsNullOrWhiteSpace(req?.By) ? line.Config.LineName : req!.By!.Trim();
+    var r = await robot.CallAsync(line.Config.LineId, by, req?.Reason ?? "");
+    return Results.Ok(r ?? new { ok = false, message = "MCS dispatcher not reachable" });
+});
+// This line's view of the robot: where it is, whether it is coming here / waiting here, battery.
+app.MapGet("/api/robot/status", async (LineService line, Pvs.LineApp.Runtime.RobotCaller robot) =>
+{
+    if (!robot.Enabled) return Results.Ok(new { enabled = false });
+    var s = await robot.StatusForLineAsync(line.Config.LineId);
+    return Results.Ok(s ?? new { enabled = true, reachable = false, state = "MCS dispatcher not reachable" });
+});
+// Operator has taken the reels off the plate: release the robot for its next stop.
+app.MapPost("/api/robot/done", async (LineService line, Pvs.LineApp.Runtime.RobotCaller robot, RobotReq? req) =>
+{
+    if (!robot.Enabled) return Results.Ok(new { ok = false, message = "robot not configured on this line" });
+    var by = string.IsNullOrWhiteSpace(req?.By) ? line.Config.LineName : req!.By!.Trim();
+    var r = await robot.DoneAsync(line.Config.LineId, by);
+    return Results.Ok(r ?? new { ok = false, message = "MCS dispatcher not reachable" });
+});
+
 app.MapGet("/api/stop/state", (LineService line) =>
     line.StopTracking is { } st ? Results.Ok(st.State()) : Results.Ok(new { ready = false }));
 
@@ -1688,6 +1716,7 @@ app.Run();
 record DevCondReq(int Machine, string Code);
 record StopReasonReq(string? Reason = null, string? Note = null);
 record SendMailReq(string? Key, string[]? To, string? Subject, string? Body);
+record RobotReq(string? By, string? Reason);
 record ShutdownReq(string Password = "");
 record MachineReq(int Machine);
 record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);

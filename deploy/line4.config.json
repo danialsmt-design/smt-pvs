@@ -38,6 +38,9 @@
 
   "badge": { "uidPrefix": "9999" },
 
+  // Delivery robot: PVS calls the MCS dispatcher on the NAS (the only thing that talks to the robot). Empty = hidden.
+  "robot": { "dispatcherUrl": "http://192.168.0.169:8090" },
+
   // writeProductionCount ON — PVS is the DPC writer for this line (external logger 192.168.0.190 died 2026-08-14).
   // Do NOT let a redeploy revert it to false: that silently stops production recording.
   "syncStockOuts": false,

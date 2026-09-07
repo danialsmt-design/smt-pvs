@@ -48,6 +48,15 @@ public class LineConfigTests
         Assert.Equal("Night", sched.ShiftAt(new System.DateTime(2026, 7, 23, 22, 0, 0)).Name);
     }
 
+    [Fact]
+    public void Robot_section_is_optional_and_parses_the_dispatcher_url()
+    {
+        Assert.False(LineConfig.Parse(Json).Robot.Enabled);
+        var c = LineConfig.Parse(Json.TrimEnd().TrimEnd('}') + ""","robot": { "dispatcherUrl": "http://192.168.0.169:8090" } }""");
+        Assert.True(c.Robot.Enabled);
+        Assert.Equal("http://192.168.0.169:8090", c.Robot.DispatcherUrl);
+    }
+
     [Theory]
     [InlineData("9999-E221%", true)]   // badge
     [InlineData("3008-A001%", false)]  // reel

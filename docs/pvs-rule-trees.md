@@ -84,6 +84,43 @@ exists only to undo a mistaken unload.
 ### Standby (spare) scan  ▫ to write
 ### Line-stop reason  ▫ to write
 
+### Call delivery robot  🔧draft (built 2026-09-07, not deployed; MCS dispatcher on the NAS is the robot's single writer)
+*Operator needs reels/packs brought from the store. UI: 🤖 Call robot button on verify.html; chip shows queued / on the way / AT LINE; tapping the AT-LINE chip releases it.*
+
+```
+CALL DELIVERY ROBOT
+│
+├─ TRIGGER  operator taps "Call robot" (any badge level — it is a request, not a stock action)
+│
+├─ GATE  robot.dispatcherUrl set in this line's config ?
+│     ├─ no  → button hidden; API answers "robot not configured on this line"
+│     └─ yes ↓  MCS dispatcher reachable ?
+│           ├─ no  → "MCS dispatcher not reachable" → nothing queued
+│           └─ yes ↓
+│
+├─ CONFIRM  none (a duplicate call for the same line returns the EXISTING job — never a second trip)
+│
+├─ ACTION
+│     1. POST {line, by, reason} → MCS /api/robot/call   (PVS never addresses the robot itself)
+│     2. dispatcher queues one Deliver job to THIS line's taught waypoint; FIFO across lines; one trip at a time
+│     3. operator screen polls /api/robot/status every 3 s → chip: queued (N ahead) · on the way · AT LINE
+│     4. operator unloads the plate → taps the chip → POST /api/robot/done → robot takes the next job or returns to the store standby
+│     5. no tap within the dwell time (launcher-adjustable, default 180 s) → robot leaves anyway
+│
+├─ INVARIANTS
+│     • StockOut / StockIn / feeders / lot …… UNCHANGED   (moving reels is not issuing or loading them)
+│     • The reel LOAD event is still the operator's scan on the feeder — the robot's arrival proves nothing
+│     • One writer to the robot: the MCS dispatcher. Lines and the launcher only enqueue.
+│
+├─ MUST NOT
+│     ✗ write any DB table     ✗ call the robot's HTTP API from a line PC     ✗ auto-call on a parts-out (future, and only as a proposal)
+│     ✗ block the operator screen when the NAS is down (5 s timeout, then "not reachable")
+│
+├─ OUTPUT  dispatcher job (#id, status, message) + event log on the launcher's Robot page; nothing recorded in PVS
+│
+└─ REVERSE  launcher "Stop current" / "Clear queue"; a failed trip is logged and the queue moves on
+```
+
 ## Automatic functions (no one triggers)
 
 ### Board count  ▫ to write

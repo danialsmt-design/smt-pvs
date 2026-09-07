@@ -30,6 +30,9 @@
 
   "badge": { "uidPrefix": "9999" },
 
+  // Delivery robot: PVS calls the MCS dispatcher on the NAS (the only thing that talks to the robot). Empty = hidden.
+  "robot": { "dispatcherUrl": "http://192.168.0.169:8090" },
+
   "syncStockOuts": true,          // Line 1: balances trusted, writing live remaining to StockOuts.Quantity
   "writeProductionCount": true,   // Line 1: PVS is the DPC writer (operator app stopped 2026-07-31); 5-min buckets per lot/side
   "c1zShadow": true,              // OBSERVE-ONLY: log C1Z pickup-consumption vs PVS per-board decrement (no stock written). Validate the F114 gap.
