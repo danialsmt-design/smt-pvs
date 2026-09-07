@@ -286,6 +286,22 @@ public sealed partial class SqlReelPartRepository : IReelPartRepository
         return v is null or DBNull ? (int?)null : Convert.ToInt32(v);
     }
 
+    public async Task<string?> GetLotModelAsync(string lotNo, CancellationToken ct = default)
+    {
+        // Same row rule as GetLotTargetAsync (latest DocID for the PONumber) so lot target and lot model agree.
+        const string sql =
+            @"SELECT TOP 1 LTRIM(RTRIM(ISNULL(ProductName,'')))
+              FROM DeliveryDocuments
+              WHERE LTRIM(RTRIM(PONumber)) = LTRIM(RTRIM(@lot))
+              ORDER BY DocID DESC";
+        await using var cn = await OpenAsync(ct);
+        await using var cmd = new SqlCommand(sql, cn);
+        cmd.Parameters.AddWithValue("@lot", lotNo ?? string.Empty);
+        var v = await cmd.ExecuteScalarAsync(ct);
+        var name = v is null or DBNull ? null : Convert.ToString(v);
+        return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+    }
+
     public async Task<LotSizeRow?> GetLotSizeAsync(string lotNo, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(lotNo)) return null;

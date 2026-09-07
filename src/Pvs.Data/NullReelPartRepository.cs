@@ -37,6 +37,9 @@ public sealed class NullReelPartRepository : IReelPartRepository
     public Task<int?> GetLotTargetAsync(string lotNo, CancellationToken ct = default) =>
         Task.FromResult<int?>(null);
 
+    public Task<string?> GetLotModelAsync(string lotNo, CancellationToken ct = default) =>
+        Task.FromResult<string?>(null);
+
     public Task<LotSizeRow?> GetLotSizeAsync(string lotNo, CancellationToken ct = default) =>
         Task.FromResult<LotSizeRow?>(null);
 

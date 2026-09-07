@@ -118,6 +118,10 @@ public interface IReelPartRepository
     /// <summary>The lot/PO target quantity (boards) from DeliveryDocuments (RevisedQty if set, else Quantity). Null if the lot isn't found.</summary>
     Task<int?> GetLotTargetAsync(string lotNo, CancellationToken ct = default);
 
+    /// <summary>The model (DeliveryDocuments.ProductName) a lot/PO belongs to — used when a magazine-slip QR opens a
+    /// lot, to check the slip's PO against the model the machines are running. Null if the PO isn't found.</summary>
+    Task<string?> GetLotModelAsync(string lotNo, CancellationToken ct = default);
+
     /// <summary>
     /// The RAW quantity columns of a lot's DeliveryDocuments row (Status + Quantity + RevisedQty + DeliveredQty),
     /// left uninterpreted for <see cref="Pvs.Core.Runtime.LotSizeResolver"/> to resolve — unlike

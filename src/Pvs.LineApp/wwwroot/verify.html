@@ -633,6 +633,8 @@ async function biScanSubmit(v){
   let r; try{ r=await api('/api/boardinput/scan',{value:v}); }catch(e){ return; }
   $('biMsg').textContent = r.message||'';
   if(r.state){ biState=r.state; renderBoardInput(); } else { refreshBoardInput(); }
+  if(r.lotStarted){ try{ updateLot(await (await fetch('/api/lot')).json()); }catch(e){} }   // the slip opened a lot — refresh the lot card
+  return r;
 }
 async function refreshBoardInput(){
   try{ biState=await (await fetch('/api/boardinput/state')).json(); }catch(e){ return; }
@@ -715,6 +717,14 @@ $('scan').addEventListener('keydown', async e => {
 
   // a CSAN barcode clears the current (wrong) scan, from anywhere — same as the Clear scan button
   if(isClear){ clearScan(); return; }
+
+  // a MAGAZINE-SLIP QR ("PO: … | QTY: … | MAG: n/N | DATE: …") scanned on the main scanner: opens the lot when it is
+  // a new PO (QR replaces the badge; side from the machine program), and counts the magazine. Either side.
+  if(up.includes('PO:') && up.includes('MAG:')){
+    const r = await biScanSubmit(val);
+    $('scanHint').textContent = (r && r.message) ? r.message : '';
+    return;
+  }
 
   // model-change qty step: scanning the FIRM barcode == pressing Confirm
   if(st.mode==='ModelChange' && st.state==='ConfirmingQty'){

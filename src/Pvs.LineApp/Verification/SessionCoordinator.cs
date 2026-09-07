@@ -1178,6 +1178,60 @@ public sealed class SessionCoordinator : IDisposable
             : $"Now tracking lot {lotNo} by {badge.Name}" + (producedBoards >= 0 ? $"; produced set to {producedBoards}." : ".");
     }
 
+    /// <summary>
+    /// OPEN A LOT FROM A MAGAZINE-SLIP QR (Danial, 2026-09-07: "the QR replaces the badge; the side comes from the
+    /// machine program"). The slip (printed by MCS from the DB) carries the PO; PVS takes the lot's model and target
+    /// from DeliveryDocuments, the SIDE from the program the machines report, and refuses when the slip's model is
+    /// not what the machines are running. A running lot that has NOT reached its target is never switched away by a
+    /// stray slip — the slip is refused with the lot's progress (finish it, or a supervisor force-ends it). The same
+    /// PO scanned again is a no-op (the caller then just counts the magazine). Audited as LotChange by "slip QR".
+    /// </summary>
+    public async Task<(bool Ok, bool Started, string Message)> StartLotFromSlipAsync(Pvs.Core.Boards.MagazineSlip slip, CancellationToken ct = default)
+    {
+        string po = (slip.Po ?? "").Trim();
+        if (po.Length == 0) return (false, false, "Slip has no PO.");
+        string cur; string? modelName; string side;
+        lock (_gate) { cur = _currentLotNo; modelName = Model?.Name; side = Side ?? "A"; }
+        if (string.Equals(cur, po, StringComparison.OrdinalIgnoreCase)) return (true, false, $"Lot {po} is already open.");
+        if (string.IsNullOrWhiteSpace(modelName))
+            return (false, false, "No model detected from the machines yet — wait for the program to be read, then scan the slip again.");
+        if (!string.IsNullOrWhiteSpace(cur))
+        {
+            var (remaining, effTarget) = LotBoards();
+            bool complete = remaining is int r && r <= 0;
+            if (!complete)
+            {
+                int produced = (effTarget ?? 0) - (remaining ?? 0);
+                return (false, false, $"⚠ Lot {cur} is still running ({produced}/{effTarget?.ToString() ?? "?"} boards) — finish it, or a supervisor force-ends it, before opening {po}.");
+            }
+        }
+        string? lotModel = null;
+        try { lotModel = await _repo.GetLotModelAsync(po, ct); } catch (Exception ex) { _log.LogDebug(ex, "lot model lookup failed for {Po}.", po); }
+        if (lotModel is null) return (false, false, $"PO {po} not found in DeliveryDocuments — cannot open the lot from this slip.");
+        if (!string.Equals(lotModel, modelName, StringComparison.OrdinalIgnoreCase))
+            return (false, false, $"⚠ Slip PO {po} is for model {lotModel} but the machines are running {modelName} — wrong slip or wrong program.");
+
+        lock (_gate)
+        {
+            _manualLotNo = po;
+            _manualLotModel = modelName + "|" + side;
+            _currentLotNo = po;
+        }
+        SaveManualLot();
+        await RefreshLotAsync(ct);   // finalizes the previous (complete) lot, resets the counter, fetches the target
+        int? target; lock (_gate) target = _lotTarget;
+        string warn = target is int t && slip.QtyTotal > 0 && t != slip.QtyTotal ? $" (slip qty {slip.QtyTotal} ≠ PO target {t})" : "";
+        await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotChange", 0, 0, po,
+            Supervisor: "slip QR", Overridden: true,
+            Note: $"lot opened by magazine-slip scan — model {modelName} side {side}; slip qty {slip.QtyTotal}, mag {slip.MagNo}/{slip.MagTotal}; target {target?.ToString() ?? "?"}",
+            LotNo: po), ct);
+        _log.LogInformation("Lot {Lot} opened from a magazine slip (model {Model} side {Side}, target {Target}, slip qty {Qty}).", po, modelName, side, target, slip.QtyTotal);
+        // Same program-vs-lot check the dropdown path does: ask each machine its program, verify a moment later.
+        foreach (var ch in _channels.Values) if (!IsMachineSkipped(ch.Machine)) ch.RequestProgram();
+        _ = Task.Run(async () => { try { await Task.Delay(2500); await AutoDetectModelAsync(); } catch { } });
+        return (true, true, $"Lot {po} opened from slip — {modelName} {side} side, target {target?.ToString() ?? "?"} boards{warn}.");
+    }
+
     /// <summary>Candidate lots for the dropdown (Planned delivery orders for the current model) + the selected lot.</summary>
     public async Task<object> LotOptionsAsync(CancellationToken ct = default)
     {

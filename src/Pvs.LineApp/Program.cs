@@ -1535,15 +1535,23 @@ app.MapPost("/api/boardinput/scan", async (LineService line, IReelPartRepository
     var v = (req.Value ?? "").Trim();
     if (v.Length == 0) return Results.Ok(new { ok = false, message = "empty scan" });
 
-    // Magazine slip (second side)?
+    // Magazine slip (either side — the first side gets the same slip)? A slip for a PO that is not the open lot
+    // OPENS that lot (QR replaces the supervisor badge; side from the machine program; model/target from the DB) —
+    // unless a lot is still running short of its target, which the coordinator refuses. Then the magazine is counted.
     var slip = Pvs.Core.Boards.MagazineSlipParser.TryParse(v);
     if (slip is not null)
     {
         string lot = coord?.CurrentLotNo ?? "";
-        if (lot.Length > 0 && !string.Equals(slip.Po, lot, StringComparison.OrdinalIgnoreCase))
-            return Results.Ok(new { ok = false, message = $"⚠ wrong lot — slip PO {slip.Po}, running lot {lot}", state = bi.State(producing) });
+        bool started = false; string startMsg = "";
+        if (coord is not null && !string.Equals(slip.Po, lot, StringComparison.OrdinalIgnoreCase))
+        {
+            var r = await coord.StartLotFromSlipAsync(slip);
+            if (!r.Ok) return Results.Ok(new { ok = false, message = r.Message, state = bi.State(producing) });
+            started = r.Started; startMsg = r.Started ? r.Message + " " : "";
+            bi.EnsureLot(coord.CurrentLotNo);
+        }
         var (added, msg) = bi.AddMagazine(slip);
-        return Results.Ok(new { ok = added, message = msg, state = bi.State(producing) });
+        return Results.Ok(new { ok = added || started, lotStarted = started, message = startMsg + msg, state = bi.State(producing) });
     }
 
     // Otherwise a bare-board PACK by reel UID (first side) — resolve part + qty from StockOuts.
