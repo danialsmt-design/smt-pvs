@@ -2,8 +2,8 @@
   "lineId": 1,
   "lineName": "DEV (this PC) — no DB, no serial",
   "shiftTimes": [
-    { "name": "Morning", "start": "07:30", "end": "19:30" },
-    { "name": "Night", "start": "19:30", "end": "07:30" }
+    { "name": "Morning", "start": "07:35", "end": "19:35" },
+    { "name": "Night", "start": "19:35", "end": "07:35" }
   ],
   "machines": [
     { "machine": 1, "port": "COM90", "model": "F130" },

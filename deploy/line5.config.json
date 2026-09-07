@@ -9,8 +9,8 @@
   "lineName": "LINE5PVS",
 
   "shiftTimes": [
-    { "name": "Day",   "start": "07:30", "end": "19:30" },
-    { "name": "Night", "start": "19:30", "end": "07:30" }
+    { "name": "Day",   "start": "07:35", "end": "19:35" },
+    { "name": "Night", "start": "19:35", "end": "07:35" }
   ],
 
   // PLACEHOLDER ports = Line 1 mapping (Line 2 turned out identical). M4 must be the physically LAST machine.

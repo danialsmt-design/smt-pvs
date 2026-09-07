@@ -45,6 +45,10 @@ public sealed class DowntimeLog
         _seeded = false;
     }
 
+    /// <summary>Drop closed spans that ended before <paramref name="before"/> (rolling retention; FirstUp is kept so
+    /// a post-midnight outage still counts as production downtime).</summary>
+    public int Prune(DateTime before) => _spans.RemoveAll(s => s.End is DateTime e && e < before);
+
     /// <summary>Feed one sample of whether ANY machine is online, at <paramref name="now"/>.</summary>
     public void Sample(bool anyOnline, DateTime now)
     {

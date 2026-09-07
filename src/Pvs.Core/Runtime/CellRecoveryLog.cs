@@ -42,6 +42,9 @@ public sealed class CellRecoveryLog
     /// <summary>Reset to clean state (e.g. a new-day boundary).</summary>
     public void Clear() { _done.Clear(); _open.Clear(); }
 
+    /// <summary>Drop completed recoveries that ended before <paramref name="before"/> (rolling retention).</summary>
+    public int Prune(DateTime before) => _done.RemoveAll(r => r.End is DateTime e && e < before);
+
     /// <summary>Restore persisted state (host reload).</summary>
     public void Restore(IEnumerable<CellRecovery> done, IEnumerable<CellRecovery> open)
     {

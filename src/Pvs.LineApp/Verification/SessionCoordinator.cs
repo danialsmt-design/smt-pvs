@@ -831,18 +831,14 @@ public sealed class SessionCoordinator : IDisposable
     private sealed record DpcBucketRow(string Lot, string Model, string Side, long Panels, DateTime FirstAt);
     private sealed record DpcStateData(long M4PanelsTotal, List<DpcBucketRow>? Pending = null);
     private static string DpcStatePath => System.IO.Path.Combine(AppContext.BaseDirectory, "dpc-state.json");
-    private static string DpcShift(DateTime t) =>
-        t.TimeOfDay >= new TimeSpan(7, 35, 0) && t.TimeOfDay < new TimeSpan(19, 35, 0) ? "Morning" : "Night";
+    // ONE shift clock: the configured shiftTimes (LineConfig -> ShiftSchedule). The DPC label, the DPC slot, the
+    // Daiya sheet and the shift-check trigger all derive from it — they used to hard-code 07:35/19:35 while
+    // ShiftKey (check status, health, uptime, shift email) used the config's 07:30/19:30 (audit M1, 2026-09-07).
+    private string DpcShift(DateTime t) => _shifts.DpcName(t);
 
-    /// <summary>Start of the DPC shift/day slot a board belongs to: 07:35 (Morning), 19:35 (Night), or 00:00 for the
-    /// night's post-midnight tail (a new calendar day = its own row, matching WindowFor's day cap). Boards in
-    /// different slots are bucketed — and written — separately.</summary>
-    private static DateTime DpcSlot(DateTime t)
-    {
-        var morning = t.Date.AddHours(7).AddMinutes(35);
-        var night = t.Date.AddHours(19).AddMinutes(35);
-        return t >= night ? night : t >= morning ? morning : t.Date;
-    }
+    /// <summary>Start of the DPC shift/day slot a board belongs to: the shift instance start, or 00:00 for a night
+    /// shift's post-midnight tail (a new calendar day = its own row, matching WindowFor's day cap).</summary>
+    private DateTime DpcSlot(DateTime t) => _shifts.SlotStart(t);
 
     private void SaveDpcState()
     {
@@ -2461,14 +2457,15 @@ public sealed class SessionCoordinator : IDisposable
     private static readonly TimeSpan ShiftTriggerGrace = TimeSpan.FromMinutes(60);
 
     /// <summary>"Day"/"Night" if <paramref name="now"/> is inside a shift-change trigger window, else null.</summary>
-    private static string? ShiftTriggerSlot(DateTime now)
+    private string? ShiftTriggerSlot(DateTime now)
     {
-        var t = now.TimeOfDay;
-        var day = new TimeSpan(7, 35, 0);
-        var night = new TimeSpan(19, 35, 0);
-        if (t >= day && t < day + ShiftTriggerGrace) return "Day";
-        if (t >= night && t < night + ShiftTriggerGrace) return "Night";
-        return null;
+        // Within the grace window after the CURRENT shift's start (from the configured schedule — one clock).
+        try
+        {
+            var start = _shifts.ShiftStart(now);
+            return now >= start && now < start + ShiftTriggerGrace ? _shifts.ShiftAt(now).Name : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>True if a ShiftChange, ModelChange or LotEnd full check already completed this shift.</summary>

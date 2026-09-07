@@ -7,8 +7,8 @@
   "lineName": "LINE2PVS",
 
   "shiftTimes": [
-    { "name": "Day",   "start": "07:30", "end": "19:30" },
-    { "name": "Night", "start": "19:30", "end": "07:30" }
+    { "name": "Day",   "start": "07:35", "end": "19:35" },
+    { "name": "Night", "start": "19:35", "end": "07:35" }
   ],
 
   // ⚠ PLACEHOLDER ports copied from Line 1 — DISCOVER the real mapping on the Line 2 PC and edit.

@@ -12,8 +12,10 @@ namespace Pvs.LineApp.Runtime;
 ///      machine starts mounting again. The operator does not start the clock; they add a COMMENT (their reason
 ///      classification + optional note) that annotates the auto-captured span (Danial 2026-08-22).
 ///   2. AUTOMATIC per-cell parts-exhaust recovery — every parts-out is timed to that cell producing again.
-/// Persists to a per-day JSON file (survives a restart, resets at the day boundary) and closes an open span at
-/// the shift boundary. READ-ONLY toward the machines — it never sends a control command.
+/// Persists to a JSON file (survives a restart) and keeps a ROLLING window of stops (48 h) — it is never wiped at
+/// midnight (that lost a night shift's stops mid-shift; audit M3, 2026-09-07). "The line has run" is tracked per
+/// SHIFT: an open span is closed at the shift boundary and the activity flags reset there. Reports/spans are
+/// clipped to a caller-supplied window (a Daiya shift, a report day). READ-ONLY toward the machines.
 /// </summary>
 public sealed class StopTrackingService : IDisposable
 {
@@ -29,6 +31,9 @@ public sealed class StopTrackingService : IDisposable
     private readonly BreakWindows _breaks;
     private readonly int _stopSeconds;
     private readonly string _path;
+
+    /// <summary>How long closed stops/recoveries are kept (covers any shift's Daiya sheet + the daily report).</summary>
+    private static readonly TimeSpan Retention = TimeSpan.FromHours(48);
 
     private readonly object _gate = new();
     private readonly ReasonStopLog _reasons = new();
@@ -71,14 +76,14 @@ public sealed class StopTrackingService : IDisposable
     {
         string? part = null;
         try { part = _partResolver(machine, feeder); } catch { /* best-effort tag */ }
-        lock (_gate) { RollDayIfNeeded(at); _cells.OnPartsOut(machine, feeder, part, at); Save(); }
+        lock (_gate) { PruneIfNeeded(at); _cells.OnPartsOut(machine, feeder, part, at); Save(); }
     }
 
     private void OnBoard(int machine, DateTime at)
     {
         lock (_gate)
         {
-            RollDayIfNeeded(at);
+            PruneIfNeeded(at);
             _cells.OnCellProduced(machine, at);   // per-cell recovery closes for THIS cell
             _reasons.OnProduced(at);              // a board = line producing => close the auto stop
             _lastBoardAt = at;
@@ -96,7 +101,7 @@ public sealed class StopTrackingService : IDisposable
         var now = DateTime.Now;
         lock (_gate)
         {
-            RollDayIfNeeded(now);
+            PruneIfNeeded(now);
             bool ok = _reasons.AddComment(reason, note, now);
             if (ok) Save();
             return ok;
@@ -110,11 +115,12 @@ public sealed class StopTrackingService : IDisposable
             var now = DateTime.Now;
             lock (_gate)
             {
-                RollDayIfNeeded(now);
+                PruneIfNeeded(now);
                 EvaluateConditions(now);
-                // Shift rollover: an open span the line never recovered from ends at the boundary.
+                // Shift rollover: an open span the line never recovered from ends at the boundary, and "has the line
+                // run" starts over for the new shift (it used to reset at calendar midnight — mid night-shift).
                 var key = SafeShiftKey(now);
-                if (key != _shiftKey) { _reasons.CloseAtShiftEnd(now); _shiftKey = key; }
+                if (key != _shiftKey) { _reasons.CloseAtShiftEnd(now); _shiftKey = key; _sawActive = false; _sawBoard = false; }
                 Save();
             }
         }
@@ -151,18 +157,47 @@ public sealed class StopTrackingService : IDisposable
         _reasons.AutoStart(reason, machines, now);
     }
 
-    private void RollDayIfNeeded(DateTime now)
+    /// <summary>Rolling retention instead of a midnight wipe: closed stops/recoveries older than the retention
+    /// window are dropped; nothing else changes at a day boundary.</summary>
+    private void PruneIfNeeded(DateTime now)
     {
         string today = now.ToString("yyyy-MM-dd");
         if (today == _date) return;
-        _reasons.Clear();
-        _cells.Clear();
-        _lastBoardAt = null;
-        _sawBoard = false;
-        _sawActive = false;
         _date = today;
-        _shiftKey = SafeShiftKey(now);
+        _reasons.Prune(now - Retention);
+        _cells.Prune(now - Retention);
     }
+
+    /// <summary>The wall-clock window of the CURRENT shift instance (used when a caller asks without a window).</summary>
+    private (DateTime From, DateTime To) CurrentShiftWindow(DateTime now)
+    {
+        try
+        {
+            var shift = _shifts.ShiftAt(now);
+            var from = _shifts.ShiftStart(now);
+            return (from, _shifts.EndAfter(from, shift));
+        }
+        catch { return (now.Date, now.Date.AddDays(1)); }
+    }
+
+    /// <summary>A stop clipped to [from, to): null when it doesn't overlap. An open span keeps End = null only while
+    /// the window is still running (to &gt; now); otherwise it is clipped to the window end.</summary>
+    private static ReasonStop? Clip(ReasonStop s, DateTime from, DateTime to, DateTime now)
+    {
+        var start = s.Start < from ? from : s.Start;
+        var rawEnd = s.End ?? now;
+        var end = rawEnd > to ? to : rawEnd;
+        if (end <= start) return null;
+        DateTime? endOut = (s.End is null && to > now && rawEnd == end) ? null : end;
+        return s with { Start = start, End = endOut };
+    }
+
+    private List<ReasonStop> ClippedStops(DateTime from, DateTime to, DateTime now) =>
+        _reasons.Stops.Concat(_reasons.Open is { } o ? new[] { o } : Array.Empty<ReasonStop>())
+            .Select(s => Clip(s, from, to, now))
+            .Where(s => s is not null).Select(s => s!)
+            .OrderBy(s => s.Start)
+            .ToList();
 
     private string? SafeShiftKey(DateTime now)
     {
@@ -216,33 +251,44 @@ public sealed class StopTrackingService : IDisposable
 
     /// <summary>Report rollup for the daily report: reason tallies (effective), each span with machine + operator
     /// reason + note, and per-cell exhaust recovery.</summary>
-    public object Report()
+    public object Report() { var now = DateTime.Now; var (f, t) = CurrentShiftWindow(now); return Report(f, t); }
+
+    /// <summary>Report rollup for ONE window [from, to): stops clipped to it, reason tallies from the clipped spans,
+    /// and the per-cell exhaust recoveries that started inside it.</summary>
+    public object Report(DateTime from, DateTime to)
     {
         var now = DateTime.Now;
         lock (_gate)
         {
+            var stops = ClippedStops(from, to, now);
+            var recs = _cells.Completed.Concat(_cells.Open).Where(r => r.Start >= from && r.Start < to).OrderBy(r => r.Start).ToList();
             return new
             {
-                byReason = _reasons.ByReason(now)
-                    .Select(r => new { reason = r.Reason, minutes = Math.Round(r.Total.TotalMinutes, 1), count = r.Count })
+                from, to,
+                byReason = stops.GroupBy(s => s.Reason)
+                    .Select(g => new { reason = g.Key, minutes = Math.Round(g.Sum(s => s.Duration(now).TotalMinutes), 1), count = g.Count() })
+                    .OrderByDescending(x => x.minutes)
                     .ToList(),
-                stops = _reasons.Stops.Concat(_reasons.Open is { } o ? new[] { o } : Array.Empty<ReasonStop>())
-                    .OrderBy(s => s.Start)
+                stops = stops
                     .Select(s => new { reason = s.Reason, machineReason = s.MachineReason, operatorReason = s.OperatorReason,
                                        note = s.Note, machines = s.Machines, start = s.Start, end = s.End,
                                        minutes = Math.Round(s.Duration(now).TotalMinutes, 1) })
                     .ToList(),
-                byCell = _cells.ByCell()
-                    .Select(c => new
+                byCell = recs.Where(r => r.End is not null).GroupBy(r => r.Cell).OrderBy(g => g.Key)
+                    .Select(g =>
                     {
-                        cell = c.Cell,
-                        exhausts = c.Count,
-                        totalMinutes = Math.Round(c.Total.TotalMinutes, 1),
-                        avgMinutes = c.Count > 0 ? Math.Round(c.Total.TotalMinutes / c.Count, 1) : 0,
-                        worstMinutes = Math.Round(c.Max.TotalMinutes, 1)
+                        var total = g.Aggregate(TimeSpan.Zero, (a, r) => a + r.Duration(now));
+                        var max = g.Max(r => r.Duration(now));
+                        return new
+                        {
+                            cell = g.Key,
+                            exhausts = g.Count(),
+                            totalMinutes = Math.Round(total.TotalMinutes, 1),
+                            avgMinutes = Math.Round(total.TotalMinutes / g.Count(), 1),
+                            worstMinutes = Math.Round(max.TotalMinutes, 1)
+                        };
                     }).ToList(),
-                recoveries = _cells.Completed
-                    .OrderBy(r => r.Start)
+                recoveries = recs.Where(r => r.End is not null)
                     .Select(r => new { cell = r.Cell, feeder = r.Feeder, part = r.Part, start = r.Start, end = r.End,
                                        minutes = Math.Round(((r.End ?? r.Start) - r.Start).TotalMinutes, 1) })
                     .ToList()
@@ -253,21 +299,24 @@ public sealed class StopTrackingService : IDisposable
     /// <summary>Downtime spans for the Daiya Graph timeline: (start, end, effective reason). Open span end = null.</summary>
     public IReadOnlyList<(DateTime Start, DateTime? End, string Reason)> Spans()
     {
-        lock (_gate)
-            return _reasons.Stops.Concat(_reasons.Open is { } o ? new[] { o } : Array.Empty<ReasonStop>())
-                .OrderBy(s => s.Start)
-                .Select(s => (s.Start, s.End, s.Reason))
-                .ToList();
+        var now = DateTime.Now; var (f, t) = CurrentShiftWindow(now);
+        lock (_gate) return ClippedStops(f, t, now).Select(s => (s.Start, s.End, s.Reason)).ToList();
     }
 
     /// <summary>Downtime spans WITH machine attribution: effective reason, the raw machine-side reason, and which
     /// machine(s) were in the stop state. Used by the Daiya report to list machine stop reasons and total the
     /// lost time per machine.</summary>
     public IReadOnlyList<(DateTime Start, DateTime? End, string Reason, string MachineReason, IReadOnlyList<int> Machines)> SpansDetailed()
+    { var now = DateTime.Now; var (f, t) = CurrentShiftWindow(now); return SpansDetailed(f, t); }
+
+    /// <summary>Downtime spans WITH machine attribution, clipped to [from, to) — the window of ONE Daiya sheet
+    /// (a shift instance), so a Night sheet never carries the Morning's stops and a past shift within retention
+    /// still has its downtime.</summary>
+    public IReadOnlyList<(DateTime Start, DateTime? End, string Reason, string MachineReason, IReadOnlyList<int> Machines)> SpansDetailed(DateTime from, DateTime to)
     {
+        var now = DateTime.Now;
         lock (_gate)
-            return _reasons.Stops.Concat(_reasons.Open is { } o ? new[] { o } : Array.Empty<ReasonStop>())
-                .OrderBy(s => s.Start)
+            return ClippedStops(from, to, now)
                 .Select(s => (s.Start, s.End, s.Reason, s.MachineReason ?? "",
                               (IReadOnlyList<int>)(s.Machines ?? (IReadOnlyList<int>)Array.Empty<int>())))
                 .ToList();
@@ -279,13 +328,19 @@ public sealed class StopTrackingService : IDisposable
         {
             if (!File.Exists(_path)) return;
             var p = JsonSerializer.Deserialize<Persisted>(File.ReadAllText(_path));
-            if (p is null || p.Date != _date) return;   // no file or a previous day -> start fresh
+            if (p is null) return;
+            // Any saved state comes back (rolling retention prunes what is too old); the activity flags only when the
+            // file was written in the CURRENT shift instance — a restart in a new shift starts that shift's flags fresh.
+            var now = DateTime.Now;
             _reasons.Restore(p.Stops ?? new(), p.OpenStop);
             _cells.Restore(p.Recoveries ?? new(), p.OpenRecoveries ?? new());
+            _reasons.Prune(now - Retention);
+            _cells.Prune(now - Retention);
+            bool sameShift = p.ShiftKey is not null && p.ShiftKey == SafeShiftKey(now);
             _lastBoardAt = p.LastBoardAt;
-            _sawBoard = p.SawBoard;
-            _sawActive = p.SawActive;
-            _shiftKey = p.ShiftKey ?? _shiftKey;
+            _sawBoard = sameShift && p.SawBoard;
+            _sawActive = sameShift && p.SawActive;
+            if (!sameShift) _reasons.CloseAtShiftEnd(now);
         }
         catch { /* corrupt/empty or old-format -> start clean */ }
     }

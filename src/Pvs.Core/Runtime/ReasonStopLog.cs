@@ -102,8 +102,12 @@ public sealed class ReasonStopLog
         _open = null;
     }
 
-    /// <summary>Reset to clean state (e.g. a new-day boundary).</summary>
+    /// <summary>Reset to clean state.</summary>
     public void Clear() { _stops.Clear(); _open = null; }
+
+    /// <summary>Drop CLOSED stops that ended before <paramref name="before"/> (rolling retention — the log is no
+    /// longer wiped at midnight, which lost a night shift's stops mid-shift). The open span is never pruned.</summary>
+    public int Prune(DateTime before) => _stops.RemoveAll(s => s.End is DateTime e && e < before);
 
     /// <summary>Restore persisted state (host reload).</summary>
     public void Restore(IEnumerable<ReasonStop> stops, ReasonStop? open)

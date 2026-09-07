@@ -55,6 +55,45 @@ public sealed class ShiftSchedule
         return start.ToString("yyyy-MM-dd") + "|" + shift.Name;
     }
 
+    /// <summary>Wall-clock start of the shift INSTANCE containing <paramref name="when"/> (the same instant
+    /// <see cref="ShiftKey"/> is keyed on — before midnight for a wrapped night shift).</summary>
+    public DateTime ShiftStart(DateTime when)
+    {
+        var shift = ShiftAt(when);
+        var start = when.Date + shift.Start.ToTimeSpan();
+        if (start > when) start = start.AddDays(-1);
+        return start;
+    }
+
+    /// <summary>Start of the shift/day SLOT for production-count rows: the shift instance start, or midnight when
+    /// the shift wrapped into a new calendar day (a DPC row is dated by calendar day, so the post-midnight tail of
+    /// a night shift is its own slot). ONE clock for every shift-scoped figure — DPC rows, Daiya, shift triggers.</summary>
+    public DateTime SlotStart(DateTime when)
+    {
+        var start = ShiftStart(when);
+        return start < when.Date ? when.Date : start;
+    }
+
+    /// <summary>The DailyProductionCount shift label for <paramref name="when"/>: "Night" for the shift named Night,
+    /// "Morning" for the other (the DB convention; the config names the day shift "Day").</summary>
+    public string DpcName(DateTime when) => DpcNameOf(ShiftAt(when));
+
+    public static string DpcNameOf(ShiftDefinition shift) =>
+        string.Equals(shift.Name, "Night", StringComparison.OrdinalIgnoreCase) ? "Night" : "Morning";
+
+    /// <summary>The wall-clock window [From, To) of the shift instance that STARTS on <paramref name="date"/> with
+    /// the DPC label <paramref name="dpcName"/> ("Morning"/"Night") — the window a Daiya sheet for that date+shift
+    /// covers. Null when no shift carries that label.</summary>
+    public (DateTime From, DateTime To)? Window(DateTime date, string dpcName)
+    {
+        var shift = _shifts.FirstOrDefault(s => string.Equals(DpcNameOf(s), dpcName, StringComparison.OrdinalIgnoreCase));
+        if (shift is null) return null;
+        var from = date.Date + shift.Start.ToTimeSpan();
+        var to = date.Date + shift.End.ToTimeSpan();
+        if (to <= from) to = to.AddDays(1);   // wraps midnight
+        return (from, to);
+    }
+
     /// <summary>The shift that begins where <paramref name="shift"/> ends.</summary>
     public ShiftDefinition Next(ShiftDefinition shift)
     {

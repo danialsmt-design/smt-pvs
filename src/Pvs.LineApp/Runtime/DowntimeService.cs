@@ -6,9 +6,10 @@ namespace Pvs.LineApp.Runtime;
 
 /// <summary>
 /// Samples the line's aggregate online state on a timer and feeds a <see cref="DowntimeLog"/>, so the
-/// daily report can show line stops. State is persisted to a JSON file (keyed by date) and reloaded on
-/// start, so a PVS restart mid-day doesn't lose the day's downtime. At a new-day boundary the log resets.
-/// "Down" = no machine online.
+/// daily report can show line stops. State is persisted to a JSON file and reloaded on start, so a PVS restart
+/// doesn't lose downtime. Spans are kept in a ROLLING window (48 h) and clipped to the caller's window — never
+/// wiped at midnight (that dropped a stop spanning 00:00 and, with FirstUp reset, hid a post-midnight outage;
+/// audit M3/M7, 2026-09-07). "Down" = no machine online.
 /// </summary>
 public sealed class DowntimeService : IDisposable
 {
@@ -17,6 +18,7 @@ public sealed class DowntimeService : IDisposable
     private readonly LineService _line;
     private readonly string _path;
     private readonly object _gate = new();
+    private static readonly TimeSpan Retention = TimeSpan.FromHours(48);
     private readonly DowntimeLog _log = new();
     private string _date;
     private Timer? _timer;
@@ -40,7 +42,7 @@ public sealed class DowntimeService : IDisposable
             lock (_gate)
             {
                 string today = now.ToString("yyyy-MM-dd");
-                if (today != _date) { _log.Clear(); _date = today; }
+                if (today != _date) { _date = today; _log.Prune(now - Retention); }   // rolling retention, no wipe
                 _log.Sample(anyOnline, now);
                 Save();
             }
@@ -48,15 +50,30 @@ public sealed class DowntimeService : IDisposable
         catch { /* sampling is best-effort */ }
     }
 
-    /// <summary>Today's production down spans, total downtime, and whether the line is currently up.</summary>
+    /// <summary>Today's (calendar day so far) production down spans, total downtime, and whether the line is up.</summary>
     public (IReadOnlyList<DownSpan> Spans, TimeSpan Total, bool Up) Snapshot()
+    {
+        var now = DateTime.Now;
+        return Snapshot(now.Date, now.Date.AddDays(1));
+    }
+
+    /// <summary>Production down spans clipped to [from, to), their total, and whether the line is currently up.</summary>
+    public (IReadOnlyList<DownSpan> Spans, TimeSpan Total, bool Up) Snapshot(DateTime from, DateTime to)
     {
         lock (_gate)
         {
             var now = DateTime.Now;
-            if (now.ToString("yyyy-MM-dd") != _date)
-                return (Array.Empty<DownSpan>(), TimeSpan.Zero, _line.Listeners.Any(l => l.Channel.IsOnline));
-            return (_log.ProductionSpans, _log.TotalDown(now), _log.IsUp);
+            var clipped = new List<DownSpan>();
+            foreach (var s in _log.ProductionSpans)
+            {
+                var start = s.Start < from ? from : s.Start;
+                var rawEnd = s.End ?? now;
+                var end = rawEnd > to ? to : rawEnd;
+                if (end <= start) continue;
+                clipped.Add(new DownSpan(start, (s.End is null && to > now && rawEnd == end) ? null : end));
+            }
+            var total = clipped.Aggregate(TimeSpan.Zero, (a, s) => a + s.Duration(now));
+            return (clipped, total, _log.IsUp);
         }
     }
 
@@ -66,8 +83,9 @@ public sealed class DowntimeService : IDisposable
         {
             if (!File.Exists(_path)) return;
             var p = JsonSerializer.Deserialize<Persisted>(File.ReadAllText(_path));
-            if (p is null || p.Date != _date) return;   // no file or previous day -> start fresh
+            if (p is null) return;
             _log.Restore(p.Spans ?? new List<DownSpan>(), p.FirstUp, p.Up, p.Seeded);
+            _log.Prune(DateTime.Now - Retention);
         }
         catch { /* corrupt/empty -> start clean */ }
     }

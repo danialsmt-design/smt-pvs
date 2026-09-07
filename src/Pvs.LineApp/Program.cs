@@ -975,7 +975,9 @@ app.MapGet("/api/report/daily", async (LineService line, IReelPartRepository rep
             })
         });
 
-    var (spans, total, up) = line.Downtime?.Snapshot() ?? (Array.Empty<Pvs.Core.Runtime.DownSpan>(), TimeSpan.Zero, false);
+    // Downtime + stop capture for the REQUESTED day (calendar day window), not whatever is in memory today (audit M5).
+    var dayStart = DateTime.TryParse(day, out var dd) ? dd.Date : DateTime.Today;
+    var (spans, total, up) = line.Downtime?.Snapshot(dayStart, dayStart.AddDays(1)) ?? (Array.Empty<Pvs.Core.Runtime.DownSpan>(), TimeSpan.Zero, false);
 
     return Results.Ok(new
     {
@@ -1004,7 +1006,7 @@ app.MapGet("/api/report/daily", async (LineService line, IReelPartRepository rep
             })
         },
         // Reason-tagged stops (under each title) + per-cell parts-exhaust recovery.
-        stopCapture = line.StopTracking?.Report(),
+        stopCapture = line.StopTracking?.Report(dayStart, dayStart.AddDays(1)),
         machines
     });
 });
@@ -1539,7 +1541,8 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
     if (co is null) return Results.Ok(new { ready = false });
     var now = DateTime.Now;
     string today = now.ToString("yyyy-MM-dd");
-    string curShift = now.TimeOfDay >= new TimeSpan(7, 35, 0) && now.TimeOfDay < new TimeSpan(19, 35, 0) ? "Morning" : "Night";
+    var shifts = line.Config.ToShiftSchedule();
+    string curShift = shifts.DpcName(now);   // ONE clock: the configured shiftTimes (audit M1)
     // Requested date/shift (defaults: today + current shift). History pulls from the DB so the sheet is never
     // stale — the in-memory Daiya log has no day boundary, so reading it directly showed the last day that ran.
     string reqDate = string.IsNullOrWhiteSpace(date) ? today : date!.Trim();
@@ -1600,7 +1603,9 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
     string? firstStart = runs.Select(r => r.StartTime).Where(x => !string.IsNullOrWhiteSpace(x) && x != "00:00:00").DefaultIfEmpty(null).Min();
     string? lastEnd = runs.Select(r => r.EndTime).Where(x => !string.IsNullOrWhiteSpace(x) && x != "00:00:00").DefaultIfEmpty(null).Max();
 
-    // Operators + downtime are live-only (not persisted historically) — populated for the current shift only.
+    // Operators are live-only (not persisted historically). Downtime is clipped to THIS sheet's shift window
+    // (date + shift), so the Night sheet never carries the Morning's stops and a past shift within the tracker's
+    // 48 h retention still shows its downtime (audit M3).
     List<string> operators = new(); string? leader = null;
     object[] downtime = System.Array.Empty<object>(); object[] lostByMachine = System.Array.Empty<object>();
     if (isLive)
@@ -1610,10 +1615,13 @@ app.MapGet("/api/daiya", async (LineService line, IReelPartRepository repo, stri
         leader = ops.FirstOrDefault(o => o.Level >= 2)?.Name;
         operators = ops.Where(o => o.Level < 2).Select(o => o.Name).Take(4).ToList();
         if (operators.Count == 0 && leader is null && ops.Count > 0) operators = ops.Select(o => o.Name).Take(4).ToList();
+    }
+    var sheetWindow = DateTime.TryParse(reqDate, out var sheetDate) ? shifts.Window(sheetDate, reqShift) : null;
+    if (sheetWindow is { } sw && line.StopTracking is { } tracker)
+    {
         var code = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         { {"rest","B"},{"scheduled","B"},{"waiting_part","K"},{"no_air","J"},{"machine","I"},{"estop","N"},{"error","J"},{"starved","O"},{"stopped","O"},{"offline","N"} };
-        var spans = line.StopTracking?.SpansDetailed()
-            ?? new List<(DateTime, DateTime?, string, string, IReadOnlyList<int>)>();
+        var spans = tracker.SpansDetailed(sw.From, sw.To);
         downtime = spans.Select(s => (object)new { start = s.Start, end = s.End, reason = s.Reason,
                                machineReason = s.MachineReason, machines = s.Machines,
                                code = code.TryGetValue(s.Reason, out var c) ? c : "O",
