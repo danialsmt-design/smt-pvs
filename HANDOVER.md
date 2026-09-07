@@ -17,6 +17,7 @@ Git: branch `session-2026-09-03`, HEAD `90f9b6f`+, working tree clean.
 - **Tables** `PartsRequests` + `PartsRequestReels` in the **MCS catalog**, created 18:38 with the NAS `sa` login (`partcontrol_user` has no CREATE TABLE; app tolerates that). Logged in COORDINATION.md.
 - **Bug found + fixed on the way:** an optional `IRobotClient?` handler parameter made minimal-APIs infer a BODY param and 500 EVERY MCS route whenever `ROBOT_HOST` was empty. Fixed (`RobotDispatcher.Client`). Never declare optional services as handler params.
 - **Watcher:** `deploy-when-idle-L2345.ps1` (scratchpad; stop-state signal) arms L2-L5 with publish `l-requests-20260907-1837`, log in that publish dir. Config needs nothing new (all `robot.*` request fields default on).
+- **Live map (MCS `robot.html`, NAS rebuilt ~18:58):** the robot's SLAM map + taught points + 8 virtual walls + pose/heading + planned route + live lidar, via `/api/robot/map` (cached 10 min) and `/api/robot/live` (1.5 s). Read-only. Double-click the map to re-frame.
 - **Verified:** request API end-to-end on the NAS DB (create/dedupe/ack/suggest-with-rack-location/pick validation: not-a-reel, wrong part; send refuses without reels; dismiss/close) — the happy-path pick (real StockOut INSERT) was NOT exercised on purpose; first real request on the floor is the test. Rule tree: "Parts request to the store (auto)".
 
 ## ⚠️ Deployment matrix — READ BEFORE ANY DEPLOY
