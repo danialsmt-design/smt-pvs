@@ -35,8 +35,18 @@ public sealed record ProductionWindow(ProductionKey Key, long Panels, DateTime S
 /// </summary>
 public sealed class ProductionCountLedger
 {
-    private readonly Dictionary<ProductionKey, ProductionBucket> _buckets = new();
+    // One bucket per production context AND per shift/day SLOT (see SlotOf): a bucket must never straddle a shift
+    // change or midnight, because the written row takes its date/shift from the bucket's FIRST board — a bucket
+    // opened at 19:33 and flushed at 19:38 booked the 19:35–19:38 boards to the Morning row. (Audit H9, 2026-09-07)
+    private readonly Dictionary<(ProductionKey Key, DateTime Slot), ProductionBucket> _buckets = new();
     private readonly object _gate = new();
+
+    /// <summary>Maps a board's time to the START of the shift/day slot it belongs to (e.g. 07:35 / 19:35 / 00:00 of
+    /// that day). Boards in different slots go to different buckets and so to different rows. Null = one slot (no
+    /// splitting) — the pre-2026-09-07 behaviour, kept for callers/tests that don't set it.</summary>
+    public Func<DateTime, DateTime>? SlotOf { get; set; }
+
+    private DateTime Slot(DateTime t) => SlotOf?.Invoke(t) ?? DateTime.MinValue;
 
     /// <summary>
     /// Restored buckets older than this are dropped instead of written — a last-resort bound against truly
@@ -56,18 +66,19 @@ public sealed class ProductionCountLedger
     public void AddPanel(ProductionKey key, DateTime at)
     {
         if (string.IsNullOrWhiteSpace(key.Lot) || string.IsNullOrWhiteSpace(key.Model)) return;
+        var k = (key, Slot(at));
         lock (_gate)
         {
-            _buckets[key] = _buckets.TryGetValue(key, out var b)
+            _buckets[k] = _buckets.TryGetValue(k, out var b)
                 ? b with { Panels = b.Panels + 1 }
                 : new ProductionBucket(key, 1, at);
         }
     }
 
-    /// <summary>Unwritten panels for one context (0 when it has none).</summary>
+    /// <summary>Unwritten panels for one context across every slot (0 when it has none).</summary>
     public long PanelsFor(ProductionKey key)
     {
-        lock (_gate) return _buckets.TryGetValue(key, out var b) ? b.Panels : 0;
+        lock (_gate) return _buckets.Where(kv => kv.Key.Key == key).Sum(kv => kv.Value.Panels);
     }
 
     /// <summary>Unwritten panels across every context.</summary>
@@ -83,6 +94,7 @@ public sealed class ProductionCountLedger
         lock (_gate)
             return _buckets.Values
                 .Where(b => b.Panels > 0)
+                .OrderBy(b => b.FirstAt)
                 .Select(b =>
                 {
                     var (start, end) = WindowFor(b.FirstAt, winEnd);
@@ -118,11 +130,33 @@ public sealed class ProductionCountLedger
         if (panels <= 0) return;
         lock (_gate)
         {
-            if (!_buckets.TryGetValue(key, out var b)) return;
-            long left = b.Panels - panels;
-            if (left > 0) _buckets[key] = b with { Panels = left, FirstAt = winEnd };
-            else _buckets.Remove(key);
+            // Oldest bucket for the context (the order Due() hands them out in).
+            var hit = _buckets.Where(kv => kv.Key.Key == key).OrderBy(kv => kv.Value.FirstAt).Select(kv => (kv.Key, kv.Value)).FirstOrDefault();
+            if (hit.Value is null) return;
+            CommitBucket(hit.Key, hit.Value, panels, winEnd);
         }
+    }
+
+    /// <summary>Commit against the EXACT bucket a window came from (matched by its first-board time), so a row that
+    /// failed to insert for one slot never lets the next slot's success take panels out of the wrong bucket.</summary>
+    public void Commit(ProductionWindow w, long panels, DateTime winEnd)
+    {
+        if (panels <= 0) return;
+        lock (_gate)
+        {
+            var hit = _buckets.Where(kv => kv.Key.Key == w.Key && kv.Value.FirstAt == w.Start).Select(kv => (kv.Key, kv.Value)).FirstOrDefault();
+            if (hit.Value is null) { Commit(w.Key, panels, winEnd); return; }   // (no exact match — fall back to oldest)
+            CommitBucket(hit.Key, hit.Value, panels, winEnd);
+        }
+    }
+
+    // Caller holds _gate. Leftovers (held back under the caller's cap) stay in the SAME slot: the window reopens at
+    // winEnd only when winEnd is still inside that slot, else at the bucket's own first-board time.
+    private void CommitBucket((ProductionKey Key, DateTime Slot) k, ProductionBucket b, long panels, DateTime winEnd)
+    {
+        long left = b.Panels - panels;
+        if (left > 0) _buckets[k] = b with { Panels = left, FirstAt = Slot(winEnd) == k.Slot ? winEnd : b.FirstAt };
+        else _buckets.Remove(k);
     }
 
     /// <summary>Every unwritten bucket, for persisting to dpc-state.json.</summary>
@@ -147,7 +181,10 @@ public sealed class ProductionCountLedger
                 if (b.Panels <= 0) continue;
                 if (string.IsNullOrWhiteSpace(b.Key.Lot) || string.IsNullOrWhiteSpace(b.Key.Model)) continue;
                 if (now - b.FirstAt > StaleAfter) { dropped += b.Panels; continue; }
-                _buckets[b.Key] = b;
+                var k = (b.Key, Slot(b.FirstAt));
+                _buckets[k] = _buckets.TryGetValue(k, out var have)
+                    ? have with { Panels = have.Panels + b.Panels, FirstAt = have.FirstAt < b.FirstAt ? have.FirstAt : b.FirstAt }
+                    : b;
             }
         }
         return dropped;

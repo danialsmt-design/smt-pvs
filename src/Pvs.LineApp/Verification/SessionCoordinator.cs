@@ -164,7 +164,9 @@ public sealed class SessionCoordinator : IDisposable
         _remaining = remaining;
         _shifts = config.ToShiftSchedule();
         LoadModelCache();     // restore the last model so the UI isn't stuck if serial/DB is down at startup
+        _dpc.SlotOf = DpcSlot;   // one DPC bucket per shift/day slot, so a row never straddles 07:35 / 19:35 / midnight (audit H9)
         LoadDpcState();       // restore the monotonic M4 total FIRST (the lot count is derived from it) + DPC counters
+        LoadMachineTally();   // restore per-machine tally offsets (HMI / C1Z corrections) so a re-baseline keeps them (audit H6)
         LoadLotProgress();    // restore the lot anchor so a restart mid-lot recomputes the count (needs _m4PanelsTotal)
         LoadManualLot();      // restore the operator's manual lot choice so it survives a restart
         LoadManualFeeders();  // restore any pen-drive feeder-list overrides (they win over the model cache)
@@ -731,6 +733,66 @@ public sealed class SessionCoordinator : IDisposable
     private sealed record LotProgressData(string LotNo, int Panels, int Extra, int? Target, long? AnchorTotal = null, string? Side = null);
     private static string LotProgressPath => System.IO.Path.Combine(AppContext.BaseDirectory, "lot-progress.json");
 
+    // ---- per-machine tally OFFSETS (audit H6) ----------------------------------------------------------------
+    // A machine's board tally is corrected by the operator's HMI key-in, by a C1Z tally sync (apply), or by the
+    // lot-end recalc — but every re-baseline (shift check, model-change check, restart, manual refresh) reseeded the
+    // tally to the M4-derived lot count, throwing the correction away; the next sync then re-applied the same delta
+    // (double decrement). Keep each machine's correction as an OFFSET from the lot count (tally − lot panels at the
+    // moment of the correction), persist it per lot, and seed = lot panels + offset at every baseline. Offsets are
+    // cleared at lot change / force-end (the tally restarts at 0 for the new run).
+    private static string MachineTallyPath => System.IO.Path.Combine(AppContext.BaseDirectory, "machine-tally.json");
+    private sealed record MachineTallyData(string LotNo, Dictionary<int, int> Offsets);
+    private readonly Dictionary<int, int> _tallyOffset = new();   // guarded by _gate
+
+    /// <summary>Record machine <paramref name="machine"/>'s tally as an offset from the lot count (caller: right after
+    /// a correction). Persisted so it survives a restart and every re-baseline of the same lot.</summary>
+    private void NoteTallyOffset(int machine, int boardsApplied)
+    {
+        string lot; lock (_gate)
+        {
+            lot = _currentLotNo;
+            int lotPanels = (!string.IsNullOrWhiteSpace(lot) && _lotCountFor == lot) ? LotPanels() : 0;
+            _tallyOffset[machine] = boardsApplied - lotPanels;
+        }
+        SaveMachineTally();
+    }
+
+    private void ClearTallyOffsets()
+    {
+        lock (_gate) _tallyOffset.Clear();
+        SaveMachineTally();
+    }
+
+    private void SaveMachineTally()
+    {
+        try
+        {
+            MachineTallyData d; lock (_gate) d = new MachineTallyData(_currentLotNo, new Dictionary<int, int>(_tallyOffset));
+            System.IO.File.WriteAllText(MachineTallyPath, System.Text.Json.JsonSerializer.Serialize(d));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "machine-tally save failed."); }
+    }
+
+    private void LoadMachineTally()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(MachineTallyPath)) return;
+            var d = System.Text.Json.JsonSerializer.Deserialize<MachineTallyData>(System.IO.File.ReadAllText(MachineTallyPath));
+            if (d is null || d.Offsets is null) return;
+            lock (_gate)
+            {
+                // Offsets belong to ONE lot: keep them only when the restored lot count is for that same lot.
+                if (string.IsNullOrWhiteSpace(d.LotNo) || d.LotNo != _lotCountFor) return;
+                _tallyOffset.Clear();
+                foreach (var kv in d.Offsets) _tallyOffset[kv.Key] = kv.Value;
+            }
+            _log.LogInformation("Restored machine tally offsets for lot {Lot}: {Offsets}.", d.LotNo,
+                string.Join(", ", d.Offsets.Select(kv => $"M{kv.Key}:{kv.Value:+#;-#;0}")));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "machine-tally load failed."); }
+    }
+
     /// <summary>Produced panels for the current lot run, DERIVED from the monotonic M4 total. Caller holds _gate.</summary>
     private int LotPanels() => (int)Math.Max(0, _m4PanelsTotal - _lotAnchorTotal);
 
@@ -771,6 +833,16 @@ public sealed class SessionCoordinator : IDisposable
     private static string DpcStatePath => System.IO.Path.Combine(AppContext.BaseDirectory, "dpc-state.json");
     private static string DpcShift(DateTime t) =>
         t.TimeOfDay >= new TimeSpan(7, 35, 0) && t.TimeOfDay < new TimeSpan(19, 35, 0) ? "Morning" : "Night";
+
+    /// <summary>Start of the DPC shift/day slot a board belongs to: 07:35 (Morning), 19:35 (Night), or 00:00 for the
+    /// night's post-midnight tail (a new calendar day = its own row, matching WindowFor's day cap). Boards in
+    /// different slots are bucketed — and written — separately.</summary>
+    private static DateTime DpcSlot(DateTime t)
+    {
+        var morning = t.Date.AddHours(7).AddMinutes(35);
+        var night = t.Date.AddHours(19).AddMinutes(35);
+        return t >= night ? night : t >= morning ? morning : t.Date;
+    }
 
     private void SaveDpcState()
     {
@@ -871,11 +943,11 @@ public sealed class SessionCoordinator : IDisposable
                 if (rows > 0)
                 {
                     // Subtract exactly what we wrote; boards produced during the write stay for the next flush.
-                    _dpc.Commit(key, panelsToWrite, winEnd);
+                    _dpc.Commit(w, panelsToWrite, winEnd);   // the exact bucket this row came from (audit H9)
                     SaveDpcState();
                     _lastProdWriteAt = DateTime.Now;
                     _log.LogInformation("DPC row: line {Line} {Shift} {Lot} {Model}/{Side} +{Boards} boards ({Start}-{End}).",
-                        _config.LineId, DpcShift(winEnd), key.Lot, key.Model, key.Side, boards,
+                        _config.LineId, DpcShift(w.Start), key.Lot, key.Model, key.Side, boards,
                         w.Start.ToString("HH:mm:ss"), w.End.ToString("HH:mm:ss"));
                 }
             }
@@ -1080,8 +1152,17 @@ public sealed class SessionCoordinator : IDisposable
         {
             int perPanel = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1;
             // Set the anchor so the derived count STARTS at producedBoards, then keeps counting live off M4.
-            lock (_gate) { _lotAnchorTotal = _m4PanelsTotal - (perPanel > 0 ? (int)Math.Round((double)producedBoards / perPanel) : producedBoards); }
+            int seedPanels;
+            lock (_gate)
+            {
+                _lotAnchorTotal = _m4PanelsTotal - (perPanel > 0 ? (int)Math.Round((double)producedBoards / perPanel) : producedBoards);
+                seedPanels = LotPanels();
+            }
             SaveLotProgress();
+            // The feeders ALREADY reflect those produced boards (they decremented all along), so each machine's tally
+            // must start there too — RefreshLotAsync just seeded 0, which made the lot-end recalc / an HMI sync draw
+            // those boards' pieces a second time. (Audit finding H7, 2026-09-07.)
+            foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(seedPanels);
         }
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotChange", 0, 0,
             string.IsNullOrWhiteSpace(lotNo) ? "(auto)" : lotNo, Supervisor: badge.Name, Overridden: true,
@@ -1144,6 +1225,7 @@ public sealed class SessionCoordinator : IDisposable
         // later HMI sync / lot-end recalc hand pieces BACK. Seeding never touches a feeder's remaining.
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);
         lock (_gate) _tallyLast.Clear();   // machine-tally results belong to the finished lot
+        ClearTallyOffsets();               // corrections belonged to the finished lot too (audit H6)
         SaveLotProgress();
         _log.LogInformation("Lot changed to {Lot}; target {Target} boards; board counter reset.", lot, target);
     }
@@ -1738,10 +1820,15 @@ public sealed class SessionCoordinator : IDisposable
         // under the just-restored feeder balances (which ALREADY reflect those boards) — otherwise the operator's
         // HMI board-count sync would subtract them a second time. On a genuine model/lot change the anchor equals
         // the total, so seed==0 and every machine correctly starts fresh.
-        int seed; lock (_gate) seed = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal));
-        foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(seed);
+        int seed; Dictionary<int, int> offsets;
+        lock (_gate) { seed = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal)); offsets = new Dictionary<int, int>(_tallyOffset); }
+        // ...PLUS each machine's own persisted correction (HMI key-in / C1Z apply), so a re-baseline never throws a
+        // correction away and the next sync never re-applies it (audit H6).
+        foreach (var ch in _channels.Values)
+            ch.Inventory.SeedBoardsApplied(Math.Max(0, seed + (offsets.TryGetValue(ch.Machine, out var off) ? off : 0)));
 
-        _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}.", model.Name, side, feeders.Count, extra, seed);
+        _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}{Offsets}.", model.Name, side, feeders.Count, extra, seed,
+            offsets.Count == 0 ? "" : " with offsets " + string.Join(", ", offsets.Select(kv => $"M{kv.Key}:{kv.Value:+#;-#;0}")));
         await RefreshLotCoverageAsync(ct);   // pull issued-per-part for this lot/side (material coverage warning)
     }
 
@@ -2059,6 +2146,7 @@ public sealed class SessionCoordinator : IDisposable
         }
         int before = ch.Inventory.BoardsApplied;
         int delta = ch.Inventory.SyncToBoardCount(hmiPanels);
+        NoteTallyOffset(machine, hmiPanels);   // keep this correction across re-baselines (audit H6)
         // Persist every tracked feeder's corrected remaining so the correction survives a restart.
         var tracked = ch.Inventory.Feeders.Where(f => f.IsTracked).ToList();
         foreach (var f in tracked)
@@ -2261,6 +2349,7 @@ public sealed class SessionCoordinator : IDisposable
             if (would && mode == "apply")
             {
                 int d = ch.Inventory.SyncToBoardCount(panels);
+                NoteTallyOffset(machine, panels);   // keep this correction across re-baselines (audit H6)
                 foreach (var f in ch.Inventory.Feeders.Where(f => f.IsTracked))
                     _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now));
                 applied = true;
@@ -2357,6 +2446,7 @@ public sealed class SessionCoordinator : IDisposable
         }
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);   // next lot starts its tally fresh (feeders untouched)
         lock (_gate) _tallyLast.Clear();
+        ClearTallyOffsets();
         SaveLotProgress();
         if (droppedManual) SaveManualLot();
         _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels); manual lot pick cleared.", endedLot, badge.Name, boards, panels);
