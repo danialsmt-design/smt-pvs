@@ -403,6 +403,7 @@
       <span id="dtChip" class="dtchip" style="display:none" onclick="openStop()"></span>
       <button id="robotBtn" onclick="callRobot()" style="display:none" title="Ask the delivery robot to come to this line">🤖 Call robot / ရိုဘော့ခေါ်</button>
       <span id="robotChip" class="dtchip" style="display:none" onclick="robotChipTap()"></span>
+      <span id="reqChip" class="dtchip" style="display:none" title="Parts requested from the store automatically (forecast)"></span>
       <a class="setuplink" href="/setup.html" style="margin-left:auto">⚙ Model &amp; lot →</a>
     </div>
     <div class="row" id="toolsWrap" style="gap:10px;display:none;margin-top:8px;flex-wrap:wrap">
@@ -1205,6 +1206,16 @@ async function robotChipTap(){
   }
 }
 setInterval(refreshRobot, 3000); refreshRobot();
+// Parts requests this line has filed with the store (from the forecast): show what the store is doing with them.
+async function refreshRequests(){
+  let s; try{ s=await (await fetch('/api/robot/requests')).json(); }catch(e){ return; }
+  const chip=$('reqChip'); if(!chip) return;
+  if(!s || !s.enabled || !s.open || !s.open.length){ chip.style.display='none'; return; }
+  const words={Open:'waiting for store',Acked:'store picking',Picking:'store picking',Sent:'on the robot'};
+  chip.textContent='📦 '+s.open.map(o=>o.part+' · '+(words[o.status]||o.status)+(o.reelsPicked?' ('+o.reelsPicked+' reel'+(o.reelsPicked>1?'s':'')+')':'')).join('  |  ');
+  chip.className='dtchip'; chip.style.display='';
+}
+setInterval(refreshRequests, 5000); refreshRequests();
 
 async function refreshHealth(){
   let h; try{ h=await (await fetch('/api/health')).json(); }catch(e){ return; }

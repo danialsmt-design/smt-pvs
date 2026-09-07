@@ -107,6 +107,17 @@ public sealed class RobotConfig
     /// <summary>MCS app base URL, e.g. "http://192.168.0.169:8090". Empty = no robot button on this line.</summary>
     public string DispatcherUrl { get; set; } = "";
     public bool Enabled => !string.IsNullOrWhiteSpace(DispatcherUrl);
+
+    /// <summary>File parts requests to the store automatically from the exhaust forecast (needs DispatcherUrl). On by default.</summary>
+    public bool AutoRequest { get; set; } = true;
+    /// <summary>Ask the store when a feeder that needs material is this many minutes from running out. Default 45 (= forecast red).</summary>
+    public int RequestMinutes { get; set; } = 45;
+    /// <summary>How often the forecast is re-read for requests (seconds). Default 60.</summary>
+    public int PollSeconds { get; set; } = 60;
+    /// <summary>After the store DISMISSES a request, do not ask for that part again for this long (or until the lot changes).</summary>
+    public int DismissCooldownMinutes { get; set; } = 90;
+    /// <summary>This app's own base URL (the service reads its own /api/exhaust). Default http://localhost:5199.</summary>
+    public string SelfUrl { get; set; } = "http://localhost:5199";
 }
 
 public sealed class BadgeConfig

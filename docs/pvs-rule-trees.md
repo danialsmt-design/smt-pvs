@@ -121,6 +121,40 @@ CALL DELIVERY ROBOT
 └─ REVERSE  launcher "Stop current" / "Clear queue"; a failed trip is logged and the queue moves on
 ```
 
+### Parts request to the store (auto, from the forecast)  🔧draft (built 2026-09-07, not deployed)
+*The line asks the store for material BEFORE a reel runs out; the store keeper picks the reels (= the stock-out), sends the robot, or dismisses. Store terminals 1+2 show the request; acting on it is the store keeper's decision.*
+
+```
+PARTS REQUEST (auto)
+│
+├─ TRIGGER  PartsRequestService, every 60 s, reads THIS line's own /api/exhaust (no new computation)
+│
+├─ GATE  robot.dispatcherUrl set AND robot.autoRequest on ?  ── no → service idle
+│     feeder row needsRequest (won't last the lot, NO spare staged, lot under-issued) AND minutes-to-run-out ≤ robot.requestMinutes (45) AND run-out time known ?
+│     no request already OPEN for that part on this line ?   part not in the DISMISS cool-down (90 min / lot change) ?
+│
+├─ CONFIRM  none on the line. The STORE decides: acknowledge → scan reels (each scan = MCS StockOut INSERT) → Send robot | Dismiss
+│
+├─ ACTION
+│     1. POST MCS /api/requests {line, lot, part, machine, feeder, minutesLeft, piecesNeeded = lot need − issued, remaining}  (one per part per line)
+│     2. keep it in parts-requests.json; poll MCS for its status → 📦 chip on verify.html (waiting for store / store picking / on the robot)
+│     3. close it on MCS when TWO consecutive forecasts agree the part is covered (reel loaded / spare staged / lasts the lot) or the lot changes
+│     4. store DISMISSED it → do not ask for that part again for the cool-down
+│
+├─ INVARIANTS
+│     • PVS writes NO stock: the StockOut row is written by MCS when the store scans the reel; the load is still the operator's feeder scan
+│     • The forecast that drives it is the SAME one the operator sees (exhaust card) — no second model
+│     • One open request per (line, part); several feeders of one part share it
+│
+├─ MUST NOT
+│     ✗ write StockOuts/StockIns/ConsumedReels     ✗ move the robot itself (only the store's Send does)     ✗ re-file a dismissed request inside the cool-down
+│     ✗ close on one noisy forecast read     ✗ request when a spare of the part is already at the line
+│
+├─ OUTPUT  request rows in MCS (PartsRequests / PartsRequestReels, MCS catalog); PVS log lines "Parts request #n filed/closed"; /api/robot/requests
+│
+└─ REVERSE  store Dismiss; PVS auto-close when covered; lot change closes all; robot.autoRequest=false turns it off (button stays)
+```
+
 ## Automatic functions (no one triggers)
 
 ### Board count  ▫ to write

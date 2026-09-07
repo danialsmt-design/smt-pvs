@@ -72,6 +72,9 @@ builder.Services.AddSingleton<Pvs.LineApp.Runtime.BoardInputState>();
 // Delivery robot: a thin caller to the MCS dispatcher on the NAS (the single writer to the robot). Inert when
 // robot.dispatcherUrl is empty in this line's config.
 builder.Services.AddSingleton(new Pvs.LineApp.Runtime.RobotCaller(lineConfig.Robot.DispatcherUrl));
+// Parts requests to the store from the exhaust forecast (asks BEFORE the reel runs out). Inert without a dispatcher URL.
+builder.Services.AddSingleton<Pvs.LineApp.Runtime.PartsRequestService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Pvs.LineApp.Runtime.PartsRequestService>());
 
 var app = builder.Build();
 
@@ -1509,6 +1512,15 @@ app.MapPost("/api/robot/done", async (LineService line, Pvs.LineApp.Runtime.Robo
     var by = string.IsNullOrWhiteSpace(req?.By) ? line.Config.LineName : req!.By!.Trim();
     var r = await robot.DoneAsync(line.Config.LineId, by);
     return Results.Ok(r ?? new { ok = false, message = "MCS dispatcher not reachable" });
+});
+
+// This line's open parts requests (filed automatically from the forecast; the store acts on them).
+app.MapGet("/api/robot/requests", (Pvs.LineApp.Runtime.PartsRequestService reqs) => Results.Ok(reqs.Snapshot()));
+app.MapPost("/api/robot/requests/run", async (Pvs.LineApp.Runtime.PartsRequestService reqs) =>
+{
+    if (!reqs.Enabled) return Results.Ok(new { ok = false, message = "parts requests are off on this line" });
+    await reqs.RunOnceAsync();
+    return Results.Ok(new { ok = true, state = reqs.Snapshot() });
 });
 
 app.MapGet("/api/stop/state", (LineService line) =>
