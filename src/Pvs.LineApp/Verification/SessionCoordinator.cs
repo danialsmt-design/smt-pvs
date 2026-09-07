@@ -169,10 +169,10 @@ public sealed class SessionCoordinator : IDisposable
         LoadMachineTally();   // restore per-machine tally offsets (HMI / C1Z corrections) so a re-baseline keeps them (audit H6)
         LoadLotProgress();    // restore the lot anchor so a restart mid-lot recomputes the count (needs _m4PanelsTotal)
         LoadManualLot();      // restore the operator's manual lot choice so it survives a restart
+        LoadFeederMapCache(); // per-model feeder maps (local copy of ProductBOM) — BEFORE the manual list, whose forced loads take counts from it
         LoadManualFeeders();  // restore any pen-drive feeder-list overrides (they win over the model cache)
         LoadManualModel();    // restore a supervisor-pinned model so a restart doesn't drop back to auto-detect
         LoadNonCanon();       // restore the non-Canon park so a restart doesn't resume Canon tracking on a non-Canon run
-        LoadFeederMapCache(); // per-model feeder maps (local copy of ProductBOM) for offline model selection
         LoadScanProgress();   // restore an in-progress check so a restart never loses scan progress
         LoadCheckStatus();    // restore the last shift/lot/model-change completion so the monitor GREEN survives a restart
         _calibration = LoadCalibration();   // restore the learned per-part exhaust-drift (shadow accuracy signal)
@@ -1430,18 +1430,41 @@ public sealed class SessionCoordinator : IDisposable
     {
         _expected.Clear();
         _expectedQty.Clear();
-        if (Model is not null && _feederMaps.TryGetValue(MapKey(Model.ProductId, Side ?? "A"), out var dbMap))
+        List<ModelCacheFeeder>? dbMap = null;
+        if (Model is not null) _feederMaps.TryGetValue(MapKey(Model.ProductId, Side ?? "A"), out dbMap);
+        if (dbMap is not null)
             foreach (var f in dbMap)
             {
                 if (!IsUsableMachine(f.Machine) || _manualFeeders.ContainsKey(f.Machine)) continue;
                 _expected[(f.Machine, f.Feeder)] = f.Part;
                 if (f.QtyPerUnit > 0) _expectedQty[(f.Machine, f.Feeder)] = f.QtyPerUnit;
             }
+        // Each pen-drive row's PLACEMENT COUNT comes from the file (Sony Mount Step / JUKI QTY). A file without it
+        // is rejected at load unless a supervisor forced it; a forced row falls back to the DB feeder map for this
+        // model/side (same machine+feeder when the part agrees, else the same part anywhere — a reshuffle moved
+        // it), and only then to 1 per board — logged. Rows at 1 per board are what drained L1 on 2026-09-07 (12 of
+        // 27 feeders really placed 8–76 per panel; reels ran out while PVS showed thousands; ~55k pcs false attrition).
+        var unmatched = new List<string>();
         foreach (var (machine, entries) in _manualFeeders)
         {
             if (!IsUsableMachine(machine)) continue;
-            foreach (var e in entries) _expected[(machine, e.Feeder)] = e.Part;
+            foreach (var e in entries)
+            {
+                _expected[(machine, e.Feeder)] = e.Part;
+                int qty = e.Qty;
+                if (qty <= 0 && dbMap is not null)
+                {
+                    var same = dbMap.FirstOrDefault(f => f.Machine == machine && f.Feeder == e.Feeder && Pvs.Core.Verification.PartNumber.Matches(f.Part, e.Part));
+                    var hit = same ?? dbMap.FirstOrDefault(f => Pvs.Core.Verification.PartNumber.Matches(f.Part, e.Part));
+                    qty = hit?.QtyPerUnit ?? 0;
+                }
+                if (qty > 0) _expectedQty[(machine, e.Feeder)] = qty;
+                else unmatched.Add($"M{machine} F{e.Feeder} {e.Part}");
+            }
         }
+        if (unmatched.Count > 0)
+            _log.LogWarning("Manual feeder list: NO placement count for {N} feeder(s) (not in the file, not in the DB feeder map) — decrementing at 1 per board: {List}",
+                unmatched.Count, string.Join(", ", unmatched));
     }
 
     /// <summary>Load one machine's feeder list from a Sony CSV (pen drive). Supervisor only. The SUPERVISOR picks
@@ -1458,6 +1481,13 @@ public sealed class SessionCoordinator : IDisposable
         int? declared = Pvs.Core.Feeders.SonyFeederCsv.DeclaredCell(csv);
         if (declared is int fm && fm != machine && !force)
             return $"CELL-MISMATCH: that file is for Cell {fm}, not Machine {machine}.";
+        // REJECT a file in a format that carries no placement count (Danial 2026-09-07: "reject the different format
+        // from the feeder list in the Parts Control PC"). The Sony export has it as Mount Step, the JUKI/Canon export
+        // as QTY; anything else would track every feeder at 1 per board. A supervisor may force it (audited), and the
+        // counts then come from the DB feeder map.
+        int noQty = entries.Count(e => e.Qty <= 0);
+        if (noQty > 0 && !force)
+            return $"REJECTED: {noQty} of {entries.Count} rows have no placement count (Mount Step / QTY column) — that is not the feeder-list format from the Parts Control PC. Load the correct feeder list; a supervisor may force this one (counts then come from the DB feeder map).";
         var label = Pvs.Core.Feeders.SonyFeederCsv.Comment(csv) ?? $"file ({entries.Count})";
         bool wasSkipped;
         lock (_gate)
@@ -1471,7 +1501,8 @@ public sealed class SessionCoordinator : IDisposable
         // The list changed → the live inventory must follow it NOW (it is only ever built in RefreshInventoryAsync);
         // otherwise the old feeders keep decrementing / forecasting / syncing until the next baseline. (Audit H3)
         try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory refresh after manual feeder load failed."); }
-        string note = declared is int d && d != machine ? $"pen-drive CSV (Cell {d} -> M{machine})" : "pen-drive CSV";
+        string note = (declared is int d && d != machine ? $"pen-drive CSV (Cell {d} -> M{machine})" : "pen-drive CSV")
+                    + (noQty > 0 ? $"; FORCED with {noQty} row(s) lacking a placement count (DB feeder map used)" : "");
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualFeederLoad", entries.Count, 0,
             $"M{machine}: {label}", Supervisor: badge.Name, Overridden: true, Note: note, LotNo: _currentLotNo));
         return $"Machine {machine}: loaded {entries.Count} feeders ({label})."
@@ -1597,7 +1628,8 @@ public sealed class SessionCoordinator : IDisposable
                     var list = new List<Pvs.Core.Feeders.SonyFeederCsv.Entry>();
                     foreach (var row in m.Value.EnumerateArray())
                         list.Add(new Pvs.Core.Feeders.SonyFeederCsv.Entry(
-                            row.GetProperty("Machine").GetInt32(), row.GetProperty("Feeder").GetInt32(), row.GetProperty("Part").GetString() ?? ""));
+                            row.GetProperty("Machine").GetInt32(), row.GetProperty("Feeder").GetInt32(), row.GetProperty("Part").GetString() ?? "",
+                            row.TryGetProperty("Qty", out var qv) && qv.TryGetInt32(out int qq) ? qq : 0));
                     if (list.Count > 0) _manualFeeders[machine] = list;
                 }
             if (doc.RootElement.TryGetProperty("Labels", out var la))

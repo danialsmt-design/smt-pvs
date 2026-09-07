@@ -36,6 +36,7 @@ public class SonyFeederCsvTests
         Assert.Equal("WA2-2419-000", e[1].Part);   // stray comma in a later column doesn't shift the first fields
         Assert.Equal("L264 - A SIDE MC2", SonyFeederCsv.Comment(Sony));
         Assert.Equal(2, SonyFeederCsv.DeclaredCell(Sony));
+        Assert.Equal(new[] { 18, 18, 12 }, e.Select(x => x.Qty).ToArray());   // Mount Step = placements per board
     }
 
     [Fact]
@@ -46,6 +47,7 @@ public class SonyFeederCsvTests
         Assert.All(e, x => Assert.Equal(1, x.Machine));
         Assert.Equal(11, e[0].Feeder); Assert.Equal("VE3-1480-104", e[0].Part);
         Assert.Equal(13, e[2].Feeder); Assert.Equal("WA1-8717-000", e[2].Part);
+        Assert.Equal(new[] { 84, 24, 6 }, e.Select(x => x.Qty).ToArray());     // QTY column
         Assert.Null(SonyFeederCsv.DeclaredCell(Juki));         // no cell to validate
         Assert.Equal("L264 - A SIDE", SonyFeederCsv.Comment(Juki));
     }
@@ -82,5 +84,17 @@ public class SonyFeederCsvTests
         Assert.Empty(SonyFeederCsv.Parse("", 1));
         Assert.Empty(SonyFeederCsv.Parse("FEEDER NO,PARTS NAME,QTY,FEEDER TYPE,", 1));
         Assert.Null(SonyFeederCsv.DeclaredCell(null));
+    }
+}
+
+public class SonyFeederCsvQtyTests
+{
+    [Fact]
+    public void A_file_without_a_count_column_parses_with_qty_zero_so_the_loader_can_reject_it()
+    {
+        const string bare = "1,[F]108 (F),VR8-1300-123\n1,[F]109 (F),WA2-2419-000\n";
+        var e = SonyFeederCsv.Parse(bare, 1);
+        Assert.Equal(2, e.Count);
+        Assert.All(e, x => Assert.Equal(0, x.Qty));
     }
 }
