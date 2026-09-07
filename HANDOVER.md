@@ -1,13 +1,13 @@
-# PVS Handover — 2026-09-06 (updated 20:05)
+# PVS Handover — 2026-09-07 (updated 09:15)
 
 In-flight session state for the next operator (e.g. a Fable session). Durable facts live in the
 `pvs-*` memory files; this file holds the **moving** state — deployment matrix + open threads.
-Git: branch `session-2026-09-03`, HEAD `ee33b51`+, working tree clean.
+Git: branch `session-2026-09-03`, HEAD `17f01c3`+, working tree clean.
 
 ## ⚠️ Deployment matrix — READ BEFORE ANY DEPLOY
 | Line | Tailscale IP | Build | Notes |
 |---|---|---|---|
-| L1 | 100.69.81.105 | **latest + lot-end calibration (CANARY) + tally-reseed fix `ece6eb9` + machine-tally sync `48f7e44` in SHADOW** | deployed 19:45 while idle (backup stamp `20260906-194532`); shadow set via `/api/setup`; lot `HC20799536000` running |
+| L1 | 100.69.81.105 | **latest + lot-end calibration (CANARY) + tally-reseed `ece6eb9` + machine-tally sync `48f7e44` (SHADOW) + PO-all-lots `ee33b51` + AUTO-UNLOAD off-list reels `17f01c3`** | deployed 2026-09-07 09:11 (backup stamp `20260907-091134`); lot `HC20799536000` running |
 | L2 | 100.94.102.44 | latest **without** calibration | producing |
 | L3 | 100.105.64.115 | (unknown, no calibration assumed) | was DOWN; **answering over Tailscale 2026-09-06 19:05**, producing L311MBU — build still unconfirmed |
 | L4 | 100.82.187.65 | latest **without** calibration | often idle |
@@ -28,6 +28,9 @@ Pickup-alert recipients **LIVE = Raja (60163327003) + Danish (60122445237)**. Re
    Other Daiya findings (2026-09-06, unfixed): (a) downtime is live-only and not shift-scoped — after 19:35 the Night sheet/card shows the Morning's stops and the Morning history sheet has none; (b) Night shift doesn't fit the sheet: timeline slots + API hourly buckets are fixed 8:30am–7:30pm; (c) NAS card shows L1 + L3 OFFLINE on LAN (.105/.126 no response) even though both answer over Tailscale — DHCP IP moved or L1 lacks the scoped 5199 firewall rule; check `ipconfig` on L1.
 6. **L3** — back on Tailscale 2026-09-06 (Wi-Fi); still wants a wired port so the NAS monitor + deploys reach it reliably. Build on box unconfirmed.
 
+7. **AUTO-UNLOAD OFF-LIST REELS — RULE + BUILT + LIVE L1 (`17f01c3`, 2026-09-07).** Danial: "if the parts are not on the feeder list for each machine they should not be decremented; all feeders which are not on the current selected model should unload automatically; and should not be in the exhaust card." At every baseline (`RefreshInventoryAsync`) reels mapped to feeders NOT in `_expected` are removed from the feeder-reel store (`FeederReelStore.RemoveOffList`, snapshot `feeder-reels.json.auto-unload-backup.json`, remainder kept by UID, StockOut untouched, audit `AutoUnload` + log warning per reel) and never configured into live inventory. This REPLACES the old "every loaded feeder must decrement" grounding for off-list feeders. Verified on L1 after deploy: exhaust card 32 rows = the 32 feeder-list feeders (was 56 with 24 off-list / 16 foreign parts, 3 phantom run-outs), request list empty, tallies 138 = lot panels. NOT done: giving back what the phantom decrement already drained from those 24 reels (start qty not exposed by API; correct by UID if Danial wants). L2–L5 get it with the rollout.
+8. **Code audit for "scope leakage" launched 2026-09-07 09:10** (4 read-only agents: lot/model/side boundaries, feeder-population consumers, panels-vs-boards units, shift/day scoping) — findings to be verified and listed here / acted on with Danial.
+
 ## Hard-won domain truths (do not re-litigate)
 - **Lot size / PO target = BOARDS** (`DeliveryDocuments.RevisedQty|Quantity`). The machine counts **PANELS** — one R0/board-complete = one panel. `_m4PanelsTotal`, `_boardsApplied`, `SyncToBoardCount` all work in **panels/cycles**.
 - **perPanel (boards/panel):** L261=6, L264=6; L254/L307/L309/L311/L313/L347=4 (`Alerts`… no — `PanelBoards` config; same on all lines).
@@ -35,6 +38,7 @@ Pickup-alert recipients **LIVE = Raja (60163327003) + Danish (60122445237)**. Re
 - **Two drift causes:** (a) **missed R0s** → board count short → under-decrement → phantom remaining → fixed by lot-end calibration to lot size; (b) **unscanned reel swap** → PVS tracks the wrong reel → L5's thousands-off (VS1-9540 family, VV5-3000-000). These are different from pickup **attrition** (VC−TC), the C1Z axis — "not perfected, don't touch it for counting."
 - **C1Z landing = 16–42% of attempts** (intermittent; refused A4E00 while actively mounting; the `C1Z000P<program-name>` form is mandatory — bare form = A4E01). Deterministic fresh read only when the machine is **stopped** (Machine Inventory "Stop → Read").
 - Count model: **start = StockOut UID qty (accurate); count down by panels × mount; calibrate to lot size at lot end.** Never lose a reel's count — accurate reels are left alone (within tolerance).
+- **Only feeders on the selected model's feeder list are tracked/decremented/forecast** (2026-09-07). Off-list reels are auto-unloaded at baseline, remainder kept by UID.
 
 ## Data access
 - **Prefer the HTTP APIs** (`/api/status`, `/api/lot`, `/api/lot/usagecheck`, `/api/machine/counts`, `/api/daiya`, `/api/exhaust`, `/api/calibration`, `/api/feederstats`, `/api/setup`, `/api/serial/trace`) — not gated. **WinRM is gated** by the permission classifier (prompt each time): use only for raw log lines with no API (LotUsageRecalc deltas, per-reel exhaust events, raw frames). The deploy script needs WinRM (one approval).
