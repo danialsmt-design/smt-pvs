@@ -376,9 +376,16 @@ public sealed class LineConfig
         return new Pvs.Core.Runtime.BreakWindows(windows);
     }
 
-    /// <summary>Child boards per panel for a model (defaults to 1 when not configured).</summary>
+    /// <summary>Child boards per panel for a model (defaults to 1 when not configured — see <see cref="HasPanelBoards"/>:
+    /// callers that would WRITE a count or calibrate against the lot size must check the factor is known first).</summary>
     public int PanelBoardsFor(string? model) =>
         !string.IsNullOrWhiteSpace(model) && PanelBoards.TryGetValue(model.Trim(), out var n) && n > 0 ? n : 1;
+
+    /// <summary>True when the model has an explicit boards-per-panel entry in the panelBoards map. An unknown model
+    /// silently gets 1 (decrement, DPC and lot progress would then be off by the true factor), so the coordinator
+    /// warns, /api/health flags it, and the lot-end calibration refuses to use the lot size for it.</summary>
+    public bool HasPanelBoards(string? model) =>
+        !string.IsNullOrWhiteSpace(model) && PanelBoards.TryGetValue(model.Trim(), out var n) && n > 0;
 
     private static readonly JsonSerializerOptions Options = new()
     {

@@ -1296,6 +1296,9 @@ public sealed class SessionCoordinator : IDisposable
     public Pvs.Core.Inventory.FeederState? FeederStateOf(int machine, int feeder) =>
         _channels.TryGetValue(machine, out var ch) ? ch.Inventory.Get(feeder) : null;
 
+    /// <summary>The tracked model's name, or null (for health: is its boards-per-panel factor configured?).</summary>
+    public string? ModelName { get { lock (_gate) return Model?.Name; } }
+
     /// <summary>Every machine number the coordinator tracks (serial + manual).</summary>
     public IReadOnlyList<int> TrackedMachines() => _channels.Keys.OrderBy(m => m).ToList();
 
@@ -1638,6 +1641,9 @@ public sealed class SessionCoordinator : IDisposable
         if (feeders.Count == 0) { _log.LogWarning("Inventory baseline skipped — feeder list (_expected) empty for {Model} ({Side}).", model.Name, side); return; }
 
         int panels = _config.PanelBoardsFor(model.Name);   // child boards per panel (a cycle mounts a full panel)
+        if (!_config.HasPanelBoards(model.Name))
+            _log.LogWarning("Model {Model} has NO panelBoards entry — boards-per-panel defaulted to 1. Decrement, lot progress and DPC will be off by the true factor until line.config.json gets an entry. (Audit H8)", model.Name);
+        var wrongPart = new List<(int Machine, int Feeder, string Part, string Uid)>();
         foreach (var ch in _channels.Values) ch.Inventory.Clear();
         foreach (var f in feeders)
         {
@@ -1648,6 +1654,17 @@ public sealed class SessionCoordinator : IDisposable
 
             var reel = _reels.Get(f.Machine, f.Feeder);
             if (reel is null || string.IsNullOrWhiteSpace(reel.Uid)) continue;
+            // The reel remembered on this feeder must be the PART the feeder list puts there. On a side/model change
+            // the same feeder number can carry a different part; the old reel's mapping survives, and loading it here
+            // tracked the OLD reel's UID/qty as the NEW part (decremented, StockOut-synced by UID) until the
+            // model-change check overwrote it. Treat a part mismatch exactly like an off-list feeder: unload it
+            // (mapping cleared, remainder kept by UID) and leave the feeder un-loaded until a reel is scanned on.
+            // Audit finding H2, 2026-09-07.
+            if (!string.IsNullOrWhiteSpace(reel.Part) && !Pvs.Core.Verification.PartNumber.Matches(reel.Part, f.Part))
+            {
+                wrongPart.Add((f.Machine, f.Feeder, reel.Part, reel.Uid));
+                continue;
+            }
             // Remaining is UID-tracked in the DB (StockOuts.Quantity, kept current — verified == live remaining, not
             // the issued full qty), so pull it from the DB by UID as the AUTHORITATIVE source: a restart or a wiped
             // local file still restores the correct balance. The local record is the fallback if the DB has no row /
@@ -1675,6 +1692,8 @@ public sealed class SessionCoordinator : IDisposable
         var covered = new HashSet<(int, int)>(feeders.Select(f => (f.Machine, f.Feeder)));
         var offList = _reels.All().Where(r => !covered.Contains((r.Machine, r.Feeder)) && !string.IsNullOrWhiteSpace(r.Uid))
                                   .Select(r => (r.Machine, r.Feeder)).ToList();
+        var wrongKeys = new HashSet<(int, int)>(wrongPart.Select(w => (w.Machine, w.Feeder)));
+        offList.AddRange(wrongKeys);   // wrong-part reels on listed feeders are unloaded the same way
         int extra = 0;
         if (offList.Count > 0)
         {
@@ -1684,10 +1703,14 @@ public sealed class SessionCoordinator : IDisposable
             {
                 var loc = _remaining.Get(r.Machine, r.Feeder);
                 int rem = (loc is not null && string.Equals(loc.Uid?.Trim(), r.Uid.Trim(), StringComparison.OrdinalIgnoreCase)) ? loc.Remaining : -1;
-                _log.LogWarning("AUTO-UNLOAD M{M} F{F} {Part} ({Uid}): not on the {Model} ({Side}) feeder list — taken off the feeder (remainder {Rem} kept by UID; StockOut untouched).",
-                    r.Machine, r.Feeder, r.Part, r.Uid, model.Name, side, rem < 0 ? "?" : rem.ToString());
+                bool wrong = wrongKeys.Contains((r.Machine, r.Feeder));
+                string listed = wrong ? (feeders.FirstOrDefault(x => x.Machine == r.Machine && x.Feeder == r.Feeder).Part ?? "?") : "";
+                string why = wrong ? $"feeder list expects {listed} here" : $"not on the {model.Name} ({side}) feeder list";
+                _log.LogWarning("AUTO-UNLOAD M{M} F{F} {Part} ({Uid}): {Why} — taken off the feeder (remainder {Rem} kept by UID; StockOut untouched).",
+                    r.Machine, r.Feeder, r.Part, r.Uid, why, rem < 0 ? "?" : rem.ToString());
                 Audit(new VerificationRecord(DateTime.Now, _config.LineName, "AutoUnload", r.Machine, r.Feeder,
-                    "off-list reel unloaded", Note: $"{r.Part} {r.Uid} not on {model.Name} {side} feeder list; remaining {(rem < 0 ? "?" : rem.ToString())} kept by UID",
+                    wrong ? "wrong-part reel unloaded" : "off-list reel unloaded",
+                    Note: $"{r.Part} {r.Uid}: {why}; remaining {(rem < 0 ? "?" : rem.ToString())} kept by UID",
                     LotNo: _currentLotNo));
             }
         }
@@ -2105,8 +2128,13 @@ public sealed class SessionCoordinator : IDisposable
             // (one R0 = one panel = boards-per-panel child boards), so convert boards -> panels before calibrating.
             // Fall back to the counted panels only when no lot size is known (DB down).
             int perPanel = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1; if (perPanel < 1) perPanel = 1;
+            bool perPanelKnown = Model is not null && _config.HasPanelBoards(Model.Name);
             int countedPanels = Math.Max(0, (int)(_m4PanelsTotal - _lotAnchorTotal));
-            lotBoards = (_lotTarget is int lt && lt > 0)
+            // Only convert the lot size with a KNOWN panel factor. An unknown model defaults to 1 board/panel, which
+            // would turn a 1200-board lot into 1200 "panels" and draw 3× the real usage off every feeder. (Audit H8)
+            if (!perPanelKnown && _lotTarget is int)
+                _log.LogWarning("Lot {Lot}: boards-per-panel unknown for model {Model} — lot-end calibration falls back to the counted {Panels} panels, NOT the lot size.", outgoingLot, Model?.Name, countedPanels);
+            lotBoards = (perPanelKnown && _lotTarget is int lt && lt > 0)
                 ? (int)Math.Round((double)(lt + _lotExtra) / perPanel)   // lot size (boards) -> panels/cycles
                 : countedPanels;
             report = BuildLotUsage(outgoingLot, lotBoards);   // AS-FOUND: deviations vs the lot size BEFORE any recalc
@@ -2296,15 +2324,23 @@ public sealed class SessionCoordinator : IDisposable
         // Finalise the production count for this lot before clearing it.
         if (_config.WriteProductionCount) { try { await FlushProductionCountAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Flush on force-end failed."); } }
         int boards = panels * pp;
+        bool droppedManual;
         lock (_gate)
         {
             _currentLotNo = ""; _lotCountFor = ""; _lotSideFor = "";
             _lotAnchorTotal = _m4PanelsTotal; _lotExtra = 0; _lotTarget = null;
+            // The supervisor's dropdown pick must go too (as SetNonCanonAsync does). Left armed, the next auto-detect
+            // tick re-adopted the ENDED lot at 0 panels, and when the real next lot was picked the lot-end recalc ran
+            // on the old lot a second time (tally ≈ a few panels vs the full lot size) — drawing the whole lot's
+            // usage off every feeder again. Audit finding H1, 2026-09-07.
+            droppedManual = _manualLotNo is not null;
+            _manualLotNo = null; _manualLotModel = null;
         }
         foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(0);   // next lot starts its tally fresh (feeders untouched)
         lock (_gate) _tallyLast.Clear();
         SaveLotProgress();
-        _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels).", endedLot, badge.Name, boards, panels);
+        if (droppedManual) SaveManualLot();
+        _log.LogInformation("Lot {Lot} FORCE-ENDED by {Sup} at {Boards} boards ({Panels} panels); manual lot pick cleared.", endedLot, badge.Name, boards, panels);
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotEnd", 0, 0,
             "ForceEnded", Supervisor: badge.Name, Quantity: boards, Overridden: true,
             Note: $"supervisor force-end at {panels}p", LotNo: endedLot), ct);

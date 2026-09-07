@@ -309,7 +309,13 @@ app.MapGet("/api/health", (LineService line) =>
         rec = recentErr ? "down" : stalled && producing ? "warn" : "ok";
     }
 
-    var sigs = new[] { serial, prod, prog, check, db, dt, rec };
+    // 8) Boards-per-panel factor known for the tracked model? An unknown model silently counts 1 board/panel
+    //    (decrement, lot progress, DPC all off by the true factor). WARN so it is seen, not discovered at lot end.
+    string? modelName = co?.ModelName;
+    bool ppKnown = modelName is null || line.Config.HasPanelBoards(modelName);
+    string ppSig = modelName is null ? "na" : ppKnown ? "ok" : "warn";
+
+    var sigs = new[] { serial, prod, prog, check, db, dt, rec, ppSig };
     string status = sigs.Contains("down") ? "down" : sigs.Contains("warn") ? "warn" : "ok";
 
     return Results.Ok(new
@@ -327,7 +333,9 @@ app.MapGet("/api/health", (LineService line) =>
             db = new { state = db, detail = line.DbHealth?.Snapshot() },
             downtime = new { state = dt, up = dtUp, minutesToday = Math.Round(dtTotal.TotalMinutes, 1) },
             recording = new { state = rec, pendingPanels = recPending, oldestPendingMin = recOldestMin,
-                              lastWriteAt = co?.LastProductionWriteAt, lastWriteError = co?.LastProductionWriteError }
+                              lastWriteAt = co?.LastProductionWriteAt, lastWriteError = co?.LastProductionWriteError },
+            perPanel = new { state = ppSig, model = modelName, boardsPerPanel = modelName is null ? (int?)null : line.Config.PanelBoardsFor(modelName),
+                             detail = ppKnown ? null : $"no panelBoards entry for {modelName} — counting 1 board per panel" }
         }
     });
 });
