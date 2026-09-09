@@ -338,6 +338,12 @@ public sealed class LineConfig
     /// runs shadow first. See SessionCoordinator.TallySyncFromMachine.</summary>
     public string C1zTallySync { get; set; } = "off";
 
+    /// <summary>When the NEXT lot's magazine slip is scanned and the running lot is short by at most this many
+    /// panels, PVS asks the machines' own mount counts whether the lot really finished; if it is genuinely short,
+    /// the operator is asked whether to finish it first or close it at what was produced. Short by MORE than this
+    /// = a lot still running: the slip is refused (supervisor). Default 2 (Danial 2026-09-09: "1 or 2 panel short").</summary>
+    public int SlipShortLotPanels { get; set; } = 2;
+
     /// <summary>
     /// APPLY the C1Z pickup model: snap each feeder's remaining to <c>start − attempted-since-load</c> on every
     /// capture and accumulate attrition as <c>VC − TC</c>, with the per-board decrement as the live fallback

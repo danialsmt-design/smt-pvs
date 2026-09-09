@@ -1558,7 +1558,7 @@ app.MapPost("/api/plan/refresh", async (Pvs.LineApp.Runtime.PlanFeedService plan
 // ---- Board input tracking (count-only, no interlock) ----
 // First side = bare-board PACKS (scan reel UID → part+qty from StockOuts); second side = MAGAZINES (scan the MCS
 // slip QR → pcs = QTY÷N). Deduped, accumulated toward the lot; also reports whether the line is producing.
-app.MapPost("/api/boardinput/scan", async (LineService line, IReelPartRepository repo, Pvs.LineApp.Runtime.BoardInputState bi, ScanReq req) =>
+app.MapPost("/api/boardinput/scan", async (LineService line, IReelPartRepository repo, Pvs.LineApp.Runtime.BoardInputState bi, BoardScanReq req) =>
 {
     var coord = line.Coordinator;
     bi.EnsureLot(coord?.CurrentLotNo);
@@ -1576,9 +1576,16 @@ app.MapPost("/api/boardinput/scan", async (LineService line, IReelPartRepository
         bool started = false; string startMsg = "";
         if (coord is not null && !string.Equals(slip.Po, lot, StringComparison.OrdinalIgnoreCase))
         {
-            var r = await coord.StartLotFromSlipAsync(slip);
+            var choice = req.FinishPrevious is null ? SessionCoordinator.ShortLotChoice.Ask
+                       : req.FinishPrevious == true ? SessionCoordinator.ShortLotChoice.FinishPrevious
+                       : SessionCoordinator.ShortLotChoice.ClosePrevious;
+            var r = await coord.StartLotFromSlipAsync(slip, choice);
+            if (!r.Ok && r.Decision is not null)   // previous lot a panel or two short: the operator decides
+                return Results.Ok(new { ok = false, needsDecision = true, decision = r.Decision, message = r.Message, state = bi.State(producing) });
             if (!r.Ok) return Results.Ok(new { ok = false, message = r.Message, state = bi.State(producing) });
-            started = r.Started; startMsg = r.Started ? r.Message + " " : "";
+            if (!r.Started)   // held: the previous lot is finished first; this slip opens its lot by itself on completion
+                return Results.Ok(new { ok = true, held = true, message = r.Message, state = bi.State(producing) });
+            started = true; startMsg = r.Message + " ";
             bi.EnsureLot(coord.CurrentLotNo);
         }
         var (added, msg) = bi.AddMagazine(slip);
@@ -1590,6 +1597,15 @@ app.MapPost("/api/boardinput/scan", async (LineService line, IReelPartRepository
     if (reel is null) return Results.Ok(new { ok = false, message = "not a magazine slip, and UID not found in StockOuts", state = bi.State(producing) });
     var (a2, m2) = bi.AddPack(reel.PartUid, reel.PartNumber, reel.RemainingQty);
     return Results.Ok(new { ok = a2, message = m2, state = bi.State(producing) });
+});
+
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    // A HELD next-lot slip that opened its lot by itself (previous lot completed): count its magazine now.
+    var line = app.Services.GetRequiredService<LineService>();
+    var bi = app.Services.GetRequiredService<Pvs.LineApp.Runtime.BoardInputState>();
+    if (line.Coordinator is { } c)
+        c.SlipLotOpened += slip => { try { bi.EnsureLot(c.CurrentLotNo); bi.AddMagazine(slip); } catch { } };
 });
 
 app.MapGet("/api/boardinput/state", (LineService line, Pvs.LineApp.Runtime.BoardInputState bi) =>
@@ -1769,6 +1785,7 @@ record AdoptReq(string Badge = "", int? Panels = null, int? Boards = null, bool 
 record MachineCountReq(int Machine, int Panels, string Badge = "");
 record SetupReq(bool? AutoC1z = null, bool? AutoC1m = null, string? TallySync = null);
 record ScanReq(string Value);
+record BoardScanReq(string Value, bool? FinishPrevious = null);
 record ReelReq(string PartNumber, string Uid);
 record QtyReq(int Quantity);
 record StartReq(string Mode);

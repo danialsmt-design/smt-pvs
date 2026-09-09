@@ -169,6 +169,7 @@ public sealed class SessionCoordinator : IDisposable
         LoadMachineTally();   // restore per-machine tally offsets (HMI / C1Z corrections) so a re-baseline keeps them (audit H6)
         LoadLotProgress();    // restore the lot anchor so a restart mid-lot recomputes the count (needs _m4PanelsTotal)
         LoadManualLot();      // restore the operator's manual lot choice so it survives a restart
+        LoadPendingSlip();    // restore a held next-lot slip (opens when the current lot completes)
         LoadFeederMapCache(); // per-model feeder maps (local copy of ProductBOM) — BEFORE the manual list, whose forced loads take counts from it
         LoadManualFeeders();  // restore any pen-drive feeder-list overrides (they win over the model cache)
         LoadManualModel();    // restore a supervisor-pinned model so a restart doesn't drop back to auto-detect
@@ -826,6 +827,9 @@ public sealed class SessionCoordinator : IDisposable
         }
         // Persist the monotonic total every board so the derived lot count is restart-accurate to the last board.
         SaveDpcState();
+        // A held next-lot slip: the moment this lot completes, open the next one (operator chose "finish first").
+        bool openPending; lock (_gate) openPending = _pendingSlip is not null;
+        if (openPending && LotBoards().RemainingBoards is int left && left <= 0) _ = Task.Run(OpenPendingSlipAsync);
     }
 
     // ---- DailyProductionCount writer (PVS as the line's production-count source; config-gated) ----
@@ -1189,39 +1193,137 @@ public sealed class SessionCoordinator : IDisposable
     /// stray slip — the slip is refused with the lot's progress (finish it, or a supervisor force-ends it). The same
     /// PO scanned again is a no-op (the caller then just counts the magazine). Audited as LotChange by "slip QR".
     /// </summary>
-    public async Task<(bool Ok, bool Started, string Message)> StartLotFromSlipAsync(Pvs.Core.Boards.MagazineSlip slip, CancellationToken ct = default)
+    // ---- Short previous lot at the next lot's slip scan (Danial 2026-09-09) --------------------------------------
+    // "If the previous lot is 1 or 2 panels short when they scan the new board tag, ask if they want to add to
+    // finish the previous lot; make the lot size = actual produced; use the calibration method (mount feeder
+    // counts) to check if the lot actually finished."
+    public enum ShortLotChoice { Ask, FinishPrevious, ClosePrevious }
+    public sealed record SlipStart(bool Ok, bool Started, string Message, object? Decision = null);
+    private Pvs.Core.Boards.MagazineSlip? _pendingSlip;   // the next lot, held until the current one completes (guarded by _gate; persisted)
+    private bool _finalizeToProduced;                     // next lot-end recalc: lot size = what was produced, not the PO target
+    /// <summary>Raised when a HELD slip opened its lot by itself (the previous lot completed) — so the magazine is counted.</summary>
+    public event Action<Pvs.Core.Boards.MagazineSlip>? SlipLotOpened;
+    private static string PendingSlipPath => System.IO.Path.Combine(AppContext.BaseDirectory, "pending-slip.json");
+    public string? PendingSlipLot { get { lock (_gate) return _pendingSlip?.Po; } }
+    private void SavePendingSlip()
+    {
+        try
+        {
+            Pvs.Core.Boards.MagazineSlip? p; lock (_gate) p = _pendingSlip;
+            if (p is null) { if (System.IO.File.Exists(PendingSlipPath)) System.IO.File.Delete(PendingSlipPath); }
+            else System.IO.File.WriteAllText(PendingSlipPath, System.Text.Json.JsonSerializer.Serialize(p));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "pending-slip save failed."); }
+    }
+    private void LoadPendingSlip()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(PendingSlipPath)) return;
+            var p = System.Text.Json.JsonSerializer.Deserialize<Pvs.Core.Boards.MagazineSlip>(System.IO.File.ReadAllText(PendingSlipPath));
+            if (p is not null && !string.IsNullOrWhiteSpace(p.Po)) { lock (_gate) _pendingSlip = p; _log.LogInformation("Restored held next-lot slip {Po} (opens when the current lot completes).", p.Po); }
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "pending-slip load failed."); }
+    }
+
+    /// <summary>The machines' OWN panel count for the current lot, from the last lot-aligned C1Z tally results
+    /// (the calibration method: successful pickups ÷ mount per feeder): the PCB-out machine's figure when it has one,
+    /// else the highest. Null when nothing fresh landed.</summary>
+    private int? MachineLotPanels(TimeSpan maxAge)
+    {
+        lock (_gate)
+        {
+            var lot = _currentLotNo;
+            var ok = _tallyLast.Values.Where(t => t.LotNo == lot && t.Verdict is "aligned" or "would-apply" or "applied" && DateTime.Now - t.At <= maxAge).ToList();
+            if (ok.Count == 0) return null;
+            return ok.FirstOrDefault(t => t.Machine == _lastMachine)?.MachinePanels ?? ok.Max(t => t.MachinePanels);
+        }
+    }
+
+    /// <summary>A held next-lot slip opens its lot once the current lot completes (called after each PCB-out board).</summary>
+    private async Task OpenPendingSlipAsync()
+    {
+        Pvs.Core.Boards.MagazineSlip? slip; lock (_gate) slip = _pendingSlip;
+        if (slip is null) return;
+        var r = await StartLotFromSlipAsync(slip, ShortLotChoice.ClosePrevious);
+        if (r.Started) { _log.LogInformation("Held slip {Po}: previous lot completed — lot opened by itself.", slip.Po); try { SlipLotOpened?.Invoke(slip); } catch { } }
+        else _log.LogWarning("Held slip {Po} could not open its lot yet: {Msg}", slip.Po, r.Message);
+    }
+
+    public async Task<SlipStart> StartLotFromSlipAsync(Pvs.Core.Boards.MagazineSlip slip, ShortLotChoice choice = ShortLotChoice.Ask, CancellationToken ct = default)
     {
         string po = (slip.Po ?? "").Trim();
-        if (po.Length == 0) return (false, false, "Slip has no PO.");
+        if (po.Length == 0) return new(false, false, "Slip has no PO.");
         string cur; string? modelName; string side;
         lock (_gate) { cur = _currentLotNo; modelName = Model?.Name; side = Side ?? "A"; }
-        if (string.Equals(cur, po, StringComparison.OrdinalIgnoreCase)) return (true, false, $"Lot {po} is already open.");
+        if (string.Equals(cur, po, StringComparison.OrdinalIgnoreCase)) return new(true, false, $"Lot {po} is already open.");
         if (string.IsNullOrWhiteSpace(modelName))
-            return (false, false, "No model detected from the machines yet — wait for the program to be read, then scan the slip again.");
+            return new(false, false, "No model detected from the machines yet — wait for the program to be read, then scan the slip again.");
+        bool closeShort = false;
         if (!string.IsNullOrWhiteSpace(cur))
         {
             var (remaining, effTarget) = LotBoards();
-            bool complete = remaining is int r && r <= 0;
+            bool complete = remaining is int r0 && r0 <= 0;
             if (!complete)
             {
-                int produced = (effTarget ?? 0) - (remaining ?? 0);
-                return (false, false, $"⚠ Lot {cur} is still running ({produced}/{effTarget?.ToString() ?? "?"} boards) — finish it, or a supervisor force-ends it, before opening {po}.");
+                int perPanel = _config.PanelBoardsFor(modelName); if (perPanel < 1) perPanel = 1;
+                int targetPanels = effTarget is int et ? (int)Math.Ceiling(et / (double)perPanel) : int.MaxValue;
+                // 1) Ask the machines (calibration method): did the lot actually finish and PVS only missed board-outs?
+                int? mp = MachineLotPanels(TimeSpan.FromMinutes(30));
+                if (mp is int m && m > LotPanels())
+                {
+                    int adopted = AdoptLotCount(m, "machine mount count at next-lot slip scan", supervisor: "slip QR", enforceCap: true);
+                    _log.LogInformation("Next-lot slip {Po}: machines' mount count says {MP} panels for lot {Cur} (PVS had {Pvs}) — adopted={Adopted}.", po, m, cur, LotPanels(), adopted);
+                    (remaining, effTarget) = LotBoards();
+                    complete = remaining is int r1 && r1 <= 0;
+                }
+                if (!complete)
+                {
+                    int shortBoards = remaining ?? int.MaxValue;
+                    int produced = (effTarget ?? 0) - (remaining ?? 0);
+                    int shortPanels = (int)Math.Ceiling(shortBoards / (double)perPanel);
+                    if (shortPanels > Math.Max(1, _config.SlipShortLotPanels))
+                        return new(false, false, $"⚠ Lot {cur} is still running ({produced}/{effTarget?.ToString() ?? "?"} boards) — finish it, or a supervisor force-ends it, before opening {po}.");
+                    if (choice == ShortLotChoice.Ask)
+                        return new(false, false,
+                            $"Lot {cur} is {shortBoards} boards ({shortPanels} panel{(shortPanels == 1 ? "" : "s")}) short: {produced}/{effTarget} — machines say {(mp is int mm ? mm + " panels" : "no fresh count")}. Finish it first, or close it at {produced}?",
+                            new { prevLot = cur, produced, target = effTarget, shortBoards, shortPanels, machinePanels = mp, newPo = po });
+                    if (choice == ShortLotChoice.FinishPrevious)
+                    {
+                        lock (_gate) _pendingSlip = slip;
+                        SavePendingSlip();
+                        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "LotHold", 0, 0, cur, Supervisor: "slip QR", Overridden: true,
+                            Note: $"operator finishes {cur} first ({shortBoards} boards short); next lot {po} held, opens on completion", LotNo: cur));
+                        return new(true, false, $"Finishing {cur} first — {shortBoards} boards to go. Lot {po} opens by itself when {cur} completes; its magazine is counted then.");
+                    }
+                    closeShort = true;   // ClosePrevious: the lot ends here; its size = what was produced
+                }
             }
         }
         string? lotModel = null;
         try { lotModel = await _repo.GetLotModelAsync(po, ct); } catch (Exception ex) { _log.LogDebug(ex, "lot model lookup failed for {Po}.", po); }
-        if (lotModel is null) return (false, false, $"PO {po} not found in DeliveryDocuments — cannot open the lot from this slip.");
+        if (lotModel is null) return new(false, false, $"PO {po} not found in DeliveryDocuments — cannot open the lot from this slip.");
         if (!string.Equals(lotModel, modelName, StringComparison.OrdinalIgnoreCase))
-            return (false, false, $"⚠ Slip PO {po} is for model {lotModel} but the machines are running {modelName} — wrong slip or wrong program.");
+            return new(false, false, $"⚠ Slip PO {po} is for model {lotModel} but the machines are running {modelName} — wrong slip or wrong program.");
 
+        if (closeShort)
+        {
+            var (rem, eff) = LotBoards();
+            Audit(new VerificationRecord(DateTime.Now, _config.LineName, "LotClosedShort", 0, 0, cur, Supervisor: "slip QR", Overridden: true,
+                Quantity: (eff ?? 0) - (rem ?? 0), Note: $"closed {rem} boards short of {eff} at the next-lot slip scan; lot size taken as produced", LotNo: cur));
+            _log.LogWarning("Lot {Cur} CLOSED SHORT by operator decision ({Rem} boards short of {Eff}) at slip scan for {Po} — lot size = produced.", cur, rem, eff, po);
+        }
         lock (_gate)
         {
             _manualLotNo = po;
             _manualLotModel = modelName + "|" + side;
             _currentLotNo = po;
+            _finalizeToProduced = closeShort;
+            _pendingSlip = null;
         }
+        SavePendingSlip();
         SaveManualLot();
-        await RefreshLotAsync(ct);   // finalizes the previous (complete) lot, resets the counter, fetches the target
+        await RefreshLotAsync(ct);   // finalizes the previous lot (at lot size, or at produced when closed short), resets the counter, fetches the target
         int? target; lock (_gate) target = _lotTarget;
         string warn = target is int t && slip.QtyTotal > 0 && t != slip.QtyTotal ? $" (slip qty {slip.QtyTotal} ≠ PO target {t})" : "";
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotChange", 0, 0, po,
@@ -1232,7 +1334,7 @@ public sealed class SessionCoordinator : IDisposable
         // Same program-vs-lot check the dropdown path does: ask each machine its program, verify a moment later.
         foreach (var ch in _channels.Values) if (!IsMachineSkipped(ch.Machine)) ch.RequestProgram();
         _ = Task.Run(async () => { try { await Task.Delay(2500); await AutoDetectModelAsync(); } catch { } });
-        return (true, true, $"Lot {po} opened from slip — {modelName} {side} side, target {target?.ToString() ?? "?"} boards{warn}.");
+        return new(true, true, $"Lot {po} opened from slip — {modelName} {side} side, target {target?.ToString() ?? "?"} boards{warn}.");
     }
 
     /// <summary>Candidate lots for the dropdown (Planned delivery orders for the current model) + the selected lot.</summary>
@@ -1323,6 +1425,7 @@ public sealed class SessionCoordinator : IDisposable
                 perPanel,
                 lastMachine = _lastMachine,
                 remaining,
+                pendingSlipLot = _pendingSlip?.Po,
                 endingSoon = remaining is int r && r <= LotEndThreshold,
                 // INTEGRITY alarm: produced has passed the effective target. Surfaces an inflated count (e.g. a
                 // bad machine adoption) immediately on the floor instead of it landing silently in the DB.
@@ -2326,7 +2429,11 @@ public sealed class SessionCoordinator : IDisposable
             // would turn a 1200-board lot into 1200 "panels" and draw 3× the real usage off every feeder. (Audit H8)
             if (!perPanelKnown && _lotTarget is int)
                 _log.LogWarning("Lot {Lot}: boards-per-panel unknown for model {Model} — lot-end calibration falls back to the counted {Panels} panels, NOT the lot size.", outgoingLot, Model?.Name, countedPanels);
-            lotBoards = (perPanelKnown && _lotTarget is int lt && lt > 0)
+            bool toProduced = _finalizeToProduced; _finalizeToProduced = false;
+            if (toProduced)
+                _log.LogWarning("Lot {Lot} was closed SHORT by operator decision — lot size taken as the produced {Panels} panels (no usage drawn for the boards never made).", outgoingLot, countedPanels);
+            lotBoards = toProduced ? countedPanels
+                : (perPanelKnown && _lotTarget is int lt && lt > 0)
                 ? (int)Math.Round((double)(lt + _lotExtra) / perPanel)   // lot size (boards) -> panels/cycles
                 : countedPanels;
             report = BuildLotUsage(outgoingLot, lotBoards);   // AS-FOUND: deviations vs the lot size BEFORE any recalc

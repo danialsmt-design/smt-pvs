@@ -43,7 +43,7 @@
   @media(max-width:900px){ .split{grid-template-columns:1fr} }
   .split .card{margin:0}
   .split > .card{min-height:0;overflow:auto}          /* left (current task): scroll inside the card if tall */
-  .rightcol{min-height:0;overflow:hidden}             /* right column fills height; checklist scrolls internally */
+  .rightcol{min-height:0;overflow-y:auto;padding-bottom:14px}   /* right column scrolls: the last card (board input) was cut off below the fold */
   #checklistCard{flex:1;min-height:0;overflow:auto}
   #exhMini,#lotCard{flex:none}
   /* ---- cards ---- */
@@ -676,9 +676,19 @@ setInterval(refreshPlan, 60000); refreshPlan();
 
 // ---- Board input tracking (first-side packs + second-side magazines) ----
 let biState=null;
-async function biScanSubmit(v){
+async function biScanSubmit(v, finishPrevious){
   v=(v||'').trim(); if(!v) return;
-  let r; try{ r=await api('/api/boardinput/scan',{value:v}); }catch(e){ return; }
+  const body = {value:v}; if(finishPrevious!==undefined) body.finishPrevious = finishPrevious;
+  let r; try{ r=await api('/api/boardinput/scan',body); }catch(e){ return; }
+  if(r.needsDecision && r.decision){
+    // the previous lot is a panel or two short: finish it first (yes) or close it at what was produced (no)
+    const d = r.decision;
+    const yes = confirm('Previous lot '+d.prevLot+' is '+d.shortBoards+' boards ('+d.shortPanels+' panel'+(d.shortPanels===1?'':'s')+') short: '+d.produced+'/'+d.target+'.\n'
+      + (d.machinePanels!=null ? 'Machines count '+d.machinePanels+' panels.\n' : '')
+      + '\nOK = add boards to FINISH '+d.prevLot+' first (lot '+d.newPo+' opens by itself when it completes)\nCancel = CLOSE '+d.prevLot+' at '+d.produced+' boards and open '+d.newPo+' now\n\n'
+      + 'ယခင် lot '+d.shortBoards+' ဘုတ် လိုနေသည် — OK = အရင်ပြီးအောင်လုပ် / Cancel = ပိတ်ပြီး lot အသစ်စတင်');
+    return biScanSubmit(v, yes);
+  }
   $('biMsg').textContent = r.message||'';
   if(r.state){ biState=r.state; renderBoardInput(); } else { refreshBoardInput(); }
   if(r.lotStarted){ try{ updateLot(await (await fetch('/api/lot')).json()); }catch(e){} }   // the slip opened a lot — refresh the lot card
@@ -686,6 +696,7 @@ async function biScanSubmit(v){
 }
 async function refreshBoardInput(){
   try{ biState=await (await fetch('/api/boardinput/state')).json(); }catch(e){ return; }
+  try{ const l = await (await fetch('/api/lot')).json(); if(l && l.pendingSlipLot){ const m=$('biMsg'); if(m && !m.textContent) m.textContent = 'Next lot '+l.pendingSlipLot+' opens by itself when '+(l.lotNo||'this lot')+' completes / ယခု lot ပြီးလျှင် '+l.pendingSlipLot+' အလိုအလျောက် စမည်'; } }catch(e){}
   renderBoardInput();
 }
 function renderBoardInput(){
