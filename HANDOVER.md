@@ -1,8 +1,8 @@
-# PVS Handover — 2026-09-09 (updated 15:25)
+# PVS Handover — 2026-09-09 (updated 16:10)
 
 In-flight session state for the next operator (e.g. a Fable session). Durable facts live in the
 `pvs-*` memory files; this file holds the **moving** state — deployment matrix + open threads.
-Git: branch `session-2026-09-03`, HEAD `975f5eb`+ (nas-daiya/docker-compose.yml has an uncommitted change from the MCS/robot session — not mine).
+Git: branch `session-2026-09-03`, HEAD `662d179`+ (nas-daiya/docker-compose.yml has an uncommitted change from the MCS/robot session — not mine).
 
 ### Delivery robot (Reeman) — MCS dispatcher LIVE on the NAS 2026-09-07 16:46; PVS side BUILT, NOT deployed (additive-only; Danial: "don't touch anything else in PVS")
 - **Robot = Reeman SLAM AMR** (flat open plate + pole display; API doc `Downloads/robot/REEMAN SLAM WEB API 3.0-*.pdf`). Danial has taught one delivery point per line + a store standby point on the robot.
@@ -24,11 +24,11 @@ Git: branch `session-2026-09-03`, HEAD `975f5eb`+ (nas-daiya/docker-compose.yml 
 ## ⚠️ Deployment matrix — READ BEFORE ANY DEPLOY
 | Line | Tailscale IP | Build | Notes |
 |---|---|---|---|
-| L1 | 100.69.81.105 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151529`); DB feeder list (32); lot HC20801331000 running |
-| L2 | 100.94.102.44 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:13 (backup `20260909-151328`); lot HC20800752000 running |
-| L3 | 100.105.64.115 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151404`); perPanel 6 (L264); Wi-Fi only; M1 = JUKI |
-| L4 | 100.82.187.65 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151419`); runs a pen-drive list (29 feeders) — counts now from the DB map |
-| L5 | 100.101.8.76 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151454`); non-Canon PARKED (health 'parked') while machines run L307 A — pre-existing; shift-change check resumed |
+| L1 | 100.69.81.105 | **`662d179` — ROLLOUT BUILD, all 5 lines identical (16:01–16:03, backups `20260909-1601xx`/`1602xx`/`1603xx`)** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151529`); DB feeder list (32); lot HC20801331000 running |
+| L2 | 100.94.102.44 | **`662d179` — ROLLOUT BUILD, all 5 lines identical (16:01–16:03, backups `20260909-1601xx`/`1602xx`/`1603xx`)** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:13 (backup `20260909-151328`); lot HC20800752000 running |
+| L3 | 100.105.64.115 | **`662d179` — ROLLOUT BUILD, all 5 lines identical (16:01–16:03, backups `20260909-1601xx`/`1602xx`/`1603xx`)** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151404`); perPanel 6 (L264); Wi-Fi only; M1 = JUKI |
+| L4 | 100.82.187.65 | **`662d179` — ROLLOUT BUILD, all 5 lines identical (16:01–16:03, backups `20260909-1601xx`/`1602xx`/`1603xx`)** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151419`); runs a pen-drive list (29 feeders) — counts now from the DB map |
+| L5 | 100.101.8.76 | **`662d179` — ROLLOUT BUILD, all 5 lines identical (16:01–16:03, backups `20260909-1601xx`/`1602xx`/`1603xx`)** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151454`); non-Canon PARKED (health 'parked') while machines run L307 A — pre-existing; shift-change check resumed |
 
 **Canary ENDED 2026-09-07 (Danial: "deploy all line"): ALL FIVE LINES on `d2c3d7a` as of 18:12.** Every line runs the same build (calibration + auto-unload + shift clock + robot). Rule that stays: deploy only when the line is idle (board rate 0 / no board for minutes), never mid-lot.
 **Danial 2026-09-07: "don't use SMB, we have direct access thru Tailscale or LAN"** — config edits go through WinRM `Invoke-Command`/`Copy-Item -ToSession`, not `\ip\C$`. NOTE `deploy-pvs.ps1` still copies the publish set over SMB internally — ask him whether to rewrite it.
@@ -38,6 +38,8 @@ Pickup-alert recipients **LIVE = Raja (60163327003) + Danish (60122445237)**. Re
 (60126816059) is committed to the C# default (`93e91a3`) but **NOT pushed live** yet.
 
 **ALL 5 LINES ON ONE BUILD since 2026-09-09 15:15 (`975f5eb`) — the L1 canary period is over (Danial: "roll out to all lines").** Live everywhere: lot-end calibration, tally reseed + persisted offsets, auto-unload of off-list / wrong-part reels, check-scan + parts-change commit rules, perPanel guard, one shift clock (07:35/19:35 on every box), rolling downtime, feeder-list placement counts (pen-drive files without a count are rejected), slip-QR lot start, machine-tally sync in SHADOW on all 5 (`/api/setup`), MCS plan card. Verified 15:17 over HTTP: health ok/warn on all, perPanel known on all, tallies = lot panels ±WIP, plan feed enabled with items on all.
+
+**SHORT-LOT RULE at the next-lot slip scan — BUILT + LIVE ALL LINES (`662d179`, 16:03).** Danial 2026-09-09: "if the previous lot is 1 or 2 panels short when they scan the new board tag, ask if they wanna add to finish the previous lot; make the lot size = actual produced; use the calibration method to check if the lot actually finished by mount feeder number." Flow in `StartLotFromSlipAsync`: running lot short by ≤ `SlipShortLotPanels` (2) → (1) the machines' own mount count (last lot-aligned C1Z tally, PCB-out machine preferred) is ADOPTED if higher than PVS's count — a lot that really finished closes normally; (2) still short → operator prompt (bilingual confirm): **OK = finish first** → the slip is HELD (`pending-slip.json`, `/api/lot.pendingSlipLot`) and opens its lot by itself on completion (`SlipLotOpened` counts its magazine); **Cancel = close short** → previous lot ends now, lot-end recalc takes the lot size as the PRODUCED panels (no phantom usage), audited `LotClosedShort`. Short by more = still running → refused (supervisor). Also: `.rightcol` now scrolls (board-input card was cut off).
 
 ## Open threads (status)
 1. **Rezman → pickup alert** — committed to default; pending live config-edit (`Alerts.PickupAlertRecipients`) + restart on L1/L2/L3/L4/L5 (L3 reachable again). Do NOT full-redeploy (see rule above).
