@@ -1,8 +1,8 @@
-# PVS Handover — 2026-09-09 (updated 15:05)
+# PVS Handover — 2026-09-09 (updated 15:25)
 
 In-flight session state for the next operator (e.g. a Fable session). Durable facts live in the
 `pvs-*` memory files; this file holds the **moving** state — deployment matrix + open threads.
-Git: branch `session-2026-09-03`, HEAD `fbf2122`+, working tree clean.
+Git: branch `session-2026-09-03`, HEAD `975f5eb`+ (nas-daiya/docker-compose.yml has an uncommitted change from the MCS/robot session — not mine).
 
 ### Delivery robot (Reeman) — MCS dispatcher LIVE on the NAS 2026-09-07 16:46; PVS side BUILT, NOT deployed (additive-only; Danial: "don't touch anything else in PVS")
 - **Robot = Reeman SLAM AMR** (flat open plate + pole display; API doc `Downloads/robot/REEMAN SLAM WEB API 3.0-*.pdf`). Danial has taught one delivery point per line + a store standby point on the robot.
@@ -24,11 +24,11 @@ Git: branch `session-2026-09-03`, HEAD `fbf2122`+, working tree clean.
 ## ⚠️ Deployment matrix — READ BEFORE ANY DEPLOY
 | Line | Tailscale IP | Build | Notes |
 |---|---|---|---|
-| L1 | 100.69.81.105 | **parts-request build `df3a1b2` (`publish/l-requests-20260907-1837`) deployed 2026-09-07 18:42 while idle (backup `20260907-184246`)** — on top of the robot build; box config unchanged (request fields default on). **ROBOT build `publish/l1-robot-20260907-1655` = commit `d2c3d7a` deployed 2026-09-07 16:57 while idle (backup `20260907-165711`); live box config gained `"robot": {"dispatcherUrl": "http://192.168.0.169:8090"}` (backup `line.config.json.bak-robot-20260907-165627`); 🤖 Call-robot button live, L1→NAS→robot verified; L1 Ethernet is now 192.168.0.165 (Wi-Fi .105).** Previously: latest + lot-end calibration (CANARY) + tally-reseed `ece6eb9` + machine-tally sync `48f7e44` (SHADOW) + PO-all-lots `ee33b51` + AUTO-UNLOAD off-list reels `17f01c3` + audit fixes H1/H2/H8 `aebaa24` + H3/H4/H5 `53fa164` + H6/H7/H9 `cba0283` + shift clock/rolling downtime `bf8f0f8` + feeder-list placement count `76684a2` + SLIP-QR OPENS THE LOT `90f9b6f` + MCS PLAN CARD `fbf2122`** | deployed 2026-09-09 15:01 while producing (backup stamp `20260909-150156`); box `shiftTimes` = 07:35/19:35; **pen-drive list retired** (`manual-feeders.json.bak-pendrive-*`) → DB feeder list live (32 feeders, with counts); lot ended, next lot not yet picked. All 9 HIGH + M1/M3/M5/M7 + F5 fixed. |
-| L2 | 100.94.102.44 | **robot build `d2c3d7a` deployed 2026-09-07 18:12 MID-LOT on Danial's "deploy all line now" (backup `20260907-181251`)**; lot HC20799537000 was at 84/300 — boards completed during the ~1 min restart are not counted (HMI sync corrects); box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`) | **parts-request build `df3a1b2` deployed by the idle watcher (backup `20260907-194532`)**; ALL 5 LINES now on `d2c3d7a` |
-| L3 | 100.105.64.115 | **robot build `d2c3d7a` deployed 2026-09-07 17:41 by hand while stopped 15 min, mode None (backup `20260907-174111`)**; box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`); M2 was already offline; robot proxy OK after the ~20 s warm-up; lot HC20800275000 retained (0/600) | **parts-request build `df3a1b2` deployed by the idle watcher (backup `20260907-185749`)**; Wi-Fi only; M1 = JUKI |
-| L4 | 100.82.187.65 | **robot build `d2c3d7a` deployed 2026-09-07 17:34 while idle (backup `20260907-173437`)**; box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`); 4/4 online, robot proxy OK | **parts-request build `df3a1b2` deployed by the idle watcher (backup `20260907-184633`)**; lot HC20799539000 finished 600/600 at 16:48 |
-| L5 | 100.101.8.76 | **robot build `d2c3d7a` deployed 2026-09-07 17:34 while parked (backup `20260907-173451`)**; box config: `robot` + shiftTimes 07:35 (backup `line.config.json.bak-robot-20260907-173412`); M2–M4 were already off, robot proxy OK | **parts-request build `df3a1b2` deployed by the idle watcher (backup `20260907-184736`)**; the "thousands-off drift" line (unscanned reel swaps) |
+| L1 | 100.69.81.105 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151529`); DB feeder list (32); lot HC20801331000 running |
+| L2 | 100.94.102.44 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:13 (backup `20260909-151328`); lot HC20800752000 running |
+| L3 | 100.105.64.115 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151404`); perPanel 6 (L264); Wi-Fi only; M1 = JUKI |
+| L4 | 100.82.187.65 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:14 (backup `20260909-151419`); runs a pen-drive list (29 feeders) — counts now from the DB map |
+| L5 | 100.101.8.76 | **`975f5eb` — ROLLOUT BUILD, all 5 lines identical** (robot `d2c3d7a` + parts-request `df3a1b2` + everything from the L1 canary) | deployed 2026-09-09 15:15 (backup `20260909-151454`); non-Canon PARKED (health 'parked') while machines run L307 A — pre-existing; shift-change check resumed |
 
 **Canary ENDED 2026-09-07 (Danial: "deploy all line"): ALL FIVE LINES on `d2c3d7a` as of 18:12.** Every line runs the same build (calibration + auto-unload + shift clock + robot). Rule that stays: deploy only when the line is idle (board rate 0 / no board for minutes), never mid-lot.
 **Danial 2026-09-07: "don't use SMB, we have direct access thru Tailscale or LAN"** — config edits go through WinRM `Invoke-Command`/`Copy-Item -ToSession`, not `\ip\C$`. NOTE `deploy-pvs.ps1` still copies the publish set over SMB internally — ask him whether to rewrite it.
@@ -36,6 +36,8 @@ For recipient/config-only changes use a **live config-edit + restart**, NOT `dep
 
 Pickup-alert recipients **LIVE = Raja (60163327003) + Danish (60122445237)**. Rezman
 (60126816059) is committed to the C# default (`93e91a3`) but **NOT pushed live** yet.
+
+**ALL 5 LINES ON ONE BUILD since 2026-09-09 15:15 (`975f5eb`) — the L1 canary period is over (Danial: "roll out to all lines").** Live everywhere: lot-end calibration, tally reseed + persisted offsets, auto-unload of off-list / wrong-part reels, check-scan + parts-change commit rules, perPanel guard, one shift clock (07:35/19:35 on every box), rolling downtime, feeder-list placement counts (pen-drive files without a count are rejected), slip-QR lot start, machine-tally sync in SHADOW on all 5 (`/api/setup`), MCS plan card. Verified 15:17 over HTTP: health ok/warn on all, perPanel known on all, tallies = lot panels ±WIP, plan feed enabled with items on all.
 
 ## Open threads (status)
 1. **Rezman → pickup alert** — committed to default; pending live config-edit (`Alerts.PickupAlertRecipients`) + restart on L1/L2/L3/L4/L5 (L3 reachable again). Do NOT full-redeploy (see rule above).
