@@ -458,6 +458,19 @@
       <div class="hd" id="exhMiniHd">⏱ Next to run out / နောက်ကုန်မည့် — Top 5</div>
       <div id="exhMiniRows"></div>
     </div>
+    <!-- MCS production plan for this line (read-only mirror of the NAS scheduler): the day's lots in run order. -->
+    <div class="card compact" id="planCard" style="display:none">
+      <div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span>📅 Plan / အစီအစဉ် <span id="planDayLbl" style="color:var(--mut);font-weight:600"></span></span>
+        <span style="display:flex;gap:4px">
+          <button class="planDay" data-off="0" onclick="planSetDay(0)" style="padding:2px 8px;border-radius:7px;border:1px solid var(--ln2);background:var(--pan2);color:inherit;font:inherit;font-size:11.5px;cursor:pointer">Today</button>
+          <button class="planDay" data-off="1" onclick="planSetDay(1)" style="padding:2px 8px;border-radius:7px;border:1px solid var(--ln2);background:var(--pan2);color:inherit;font:inherit;font-size:11.5px;cursor:pointer">Tomorrow</button>
+          <button class="planDay" data-off="2" onclick="planSetDay(2)" style="padding:2px 8px;border-radius:7px;border:1px solid var(--ln2);background:var(--pan2);color:inherit;font:inherit;font-size:11.5px;cursor:pointer">+2</button>
+        </span>
+      </div>
+      <div id="planRows" style="font-size:12.5px"></div>
+      <div id="planFoot" style="margin-top:5px;font-size:11px;color:var(--mut2)"></div>
+    </div>
     <!-- Lot card: #lotCardBody is rebuilt by updateLot() each refresh; the set-count footer inside it is a
          PERSISTENT element (its inputs survive refreshes) integrated under the same card border. -->
     <div class="card" id="lotCard" style="display:none">
@@ -626,6 +639,40 @@ setInterval(renderMachineBar, 4000); renderMachineBar();
 async function devSet(m, code){ try{ await fetch('/api/dev/condition', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({machine:m, code:code})}); }catch(e){} }
 async function devAll(code){ for(var m=1;m<=4;m++){ await devSet(m, code); } renderMachineBar(); }
 async function devSpread(){ var codes=['ST','PW','SP','ES']; for(var i=0;i<4;i++){ await devSet(i+1, codes[i]); } renderMachineBar(); }
+
+// ---- MCS production plan (read-only mirror; /api/plan) ----
+let planOff = 0;
+function planSetDay(off){ planOff = off; refreshPlan(); }
+function planHm(t){ if(!t) return ''; const d=new Date(t); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
+async function refreshPlan(){
+  let p; try{ p = await (await fetch('/api/plan?d='+planOff)).json(); }catch(e){ return; }
+  const card = $('planCard'); if(!card) return;
+  if(!p.enabled){ card.style.display='none'; return; }
+  card.style.display='';
+  document.querySelectorAll('.planDay').forEach(b=>{ const on = Number(b.dataset.off)===planOff; b.style.borderColor = on?'var(--acc)':'var(--ln2)'; b.style.color = on?'var(--acc2)':'inherit'; });
+  const d = new Date(p.date+'T00:00:00');
+  $('planDayLbl').textContent = d.toLocaleDateString(undefined,{weekday:'short',day:'2-digit',month:'short'});
+  const items = p.items||[];
+  if(!items.length){
+    $('planRows').innerHTML = '<div style="color:var(--mut);padding:4px 0">'+(p.error?'MCS plan not available — '+p.error:'No lots planned on this line for this day / ဤနေ့ အစီအစဉ်မရှိ')+'</div>';
+  } else {
+    $('planRows').innerHTML = items.map((it,i)=>{
+      const col = it.running?'var(--ok)':it.late?'var(--red)':it.held?'var(--amber)':'var(--mut)';
+      const badge = it.running?'RUNNING':it.held?'WAIT 1st SIDE':it.late?'LATE':(i===0?'NEXT':'');
+      const span = (it.continuesFromPrevDay?'…':'')+planHm(it.dayFrom)+'–'+planHm(it.dayTo)+(it.continuesNextDay?'…':'');
+      const prog = it.done>0 ? it.done+'/'+it.qty : it.qty;
+      return '<div style="display:grid;grid-template-columns:20px 1fr auto auto;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--ln)">'
+        + '<span style="color:var(--mut2)">'+(i+1)+'</span>'
+        + '<span><b>'+it.model+' '+it.side+'</b> <span style="color:var(--mut)">'+it.po+'</span>'+(it.note?' <span style="color:var(--mut2)">· '+it.note+'</span>':'')+'</span>'
+        + '<span style="color:var(--mut);white-space:nowrap">'+prog+' pcs · '+span+'</span>'
+        + '<span style="font-weight:800;font-size:10.5px;color:'+col+';min-width:64px;text-align:right">'+badge+'</span>'
+        + '</div>';
+    }).join('');
+  }
+  const gen = p.generatedAt ? new Date(p.generatedAt) : null;
+  $('planFoot').textContent = (items.length? items.length+' lot(s) this day · ' : '') + (gen? 'MCS plan '+gen.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '') + (p.error && items.length? ' · last read failed: '+p.error : '');
+}
+setInterval(refreshPlan, 60000); refreshPlan();
 
 // ---- Board input tracking (first-side packs + second-side magazines) ----
 let biState=null;

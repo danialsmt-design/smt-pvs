@@ -68,6 +68,9 @@ builder.Services.AddSingleton<Pvs.LineApp.Runtime.ShortageMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<Pvs.LineApp.Runtime.ShortageMonitorService>());
 // Holds the reels an operator has scanned during a standby-reel check (in-memory; no DB writes).
 builder.Services.AddSingleton<Pvs.LineApp.Runtime.StandbyScanState>();
+// MCS production schedule mirrored on the operator screen (read-only; MCS on the NAS computes it).
+builder.Services.AddSingleton<Pvs.LineApp.Runtime.PlanFeedService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<Pvs.LineApp.Runtime.PlanFeedService>());
 builder.Services.AddSingleton<Pvs.LineApp.Runtime.BoardInputState>();
 // Delivery robot: a thin caller to the MCS dispatcher on the NAS (the single writer to the robot). Inert when
 // robot.dispatcherUrl is empty in this line's config.
@@ -1534,6 +1537,22 @@ app.MapPost("/api/stop/reason", (LineService line, StopReasonReq req) =>
     return st.AddComment(req.Reason, req.Note)
         ? Results.Ok(new { ok = true, state = st.State() })
         : Results.Ok(new { ok = false, message = "no open stop to comment on (or empty comment)" });
+});
+
+// ---- MCS production plan for this line (read-only mirror) ----
+// ?date=yyyy-MM-dd (default today); ?d=+1 for tomorrow etc. Items are the lots planned on this line that day,
+// in run order, with the part of each that falls on the day. POST /api/plan/refresh re-reads MCS now.
+app.MapGet("/api/plan", (Pvs.LineApp.Runtime.PlanFeedService plan, string? date, int? d) =>
+{
+    var day = DateTime.Today;
+    if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var parsed)) day = parsed.Date;
+    else if (d is int off) day = DateTime.Today.AddDays(off);
+    return Results.Ok(plan.Snapshot(day));
+});
+app.MapPost("/api/plan/refresh", async (Pvs.LineApp.Runtime.PlanFeedService plan) =>
+{
+    bool ok = await plan.FetchAsync();
+    return Results.Ok(new { ok, state = plan.Snapshot(DateTime.Today) });
 });
 
 // ---- Board input tracking (count-only, no interlock) ----
