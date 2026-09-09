@@ -489,6 +489,9 @@ public sealed class SessionCoordinator : IDisposable
             _feederMaps[MapKey(productId, side)] = fresh
                 .Select(kv => new ModelCacheFeeder(kv.Key.Item1, kv.Key.Item2, kv.Value,
                     freshQty.TryGetValue(kv.Key, out var q) ? q : 0)).ToList();
+            // MANUAL MODE: the pen-drive rows take their placement counts from this (now fresh) DB map — rebuild so
+            // a list restored at startup from an older cache (counts 0) picks the real counts up on the first DB read.
+            if (_manualFeeders.Count > 0) RebuildExpectedFromManual();
             SaveModelCache();      // remember the model + feeder map so a restart isn't stuck with no model
             SaveFeederMapCache();  // persist the per-model feeder map for offline model selection
             // If a check is in progress, refresh ITS checklist from the updated map (mid-check ProductBOM amendment)
