@@ -162,10 +162,19 @@ public sealed class MachineInventory
         {
             trueBoards = Math.Max(0, trueBoards);
             int delta = trueBoards - _boardsApplied;
+            int applied = _boardsApplied;
             foreach (var f in _feeders.Values)
             {
                 if (!f.IsTracked) continue;
-                f.Remaining = Math.Max(0, f.Remaining - f.MountedPerBoard * delta);
+                // The missed (or double-counted) boards happened at unknown moments in this run, so a reel takes
+                // the SHARE of the correction proportional to the boards it was on the machine for: a reel loaded
+                // at the start of the run takes all of it, a reel loaded just now takes none. Applying the whole
+                // difference to every reel deducted boards made before a reel was loaded (audit 2026-09-11).
+                // A reel loaded before this run's tally was seeded (LoadBoards > applied) has run the whole run.
+                int since = f.LoadBoards <= applied ? applied - f.LoadBoards : applied;
+                double share = applied > 0 ? since / (double)applied : 1.0;
+                int pieces = (int)Math.Round(f.MountedPerBoard * delta * share);
+                f.Remaining = Math.Max(0, f.Remaining - pieces);
             }
             _boardsApplied = trueBoards;
             return delta;

@@ -127,4 +127,34 @@ public class MachineInventoryTests
         inv.SyncToBoardCount(305);                               // operator keys the HMI truth
         Assert.Equal(2800 - 5 * 4, inv.Get(108)!.Remaining);    // only the 5 missed boards, not 305
     }
+
+    [Fact]
+    public void Correction_is_shared_by_boards_each_reel_was_on_the_machine_for()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "OLD-PART", 4);
+        inv.Configure(109, "NEW-PART", 4);
+        inv.LoadReel(108, "old-uid", 4000);          // on the machine from the start of the run
+        for (int i = 0; i < 100; i++) inv.OnBoardComplete();   // PVS counted 100 panels
+        inv.LoadReel(109, "new-uid", 4000);          // loaded NOW, at panel 100
+        // The operator's HMI says 120 panels: 20 were missed — all of them BEFORE the new reel was loaded.
+        int delta = inv.SyncToBoardCount(120);
+        Assert.Equal(20, delta);
+        Assert.Equal(4000 - 100 * 4 - 20 * 4, inv.Get(108)!.Remaining);   // old reel takes the whole correction
+        Assert.Equal(4000, inv.Get(109)!.Remaining);                       // the new reel ran none of them
+        Assert.Equal(120, inv.BoardsApplied);
+    }
+
+    [Fact]
+    public void Correction_share_is_proportional_for_a_reel_loaded_mid_run()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(110, "P", 2);
+        inv.LoadReel(110, "u0", 1000);
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();
+        inv.LoadReel(110, "u1", 1000);               // swapped at panel 50
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();   // now 100 applied; this reel ran 50 of them
+        inv.SyncToBoardCount(110);                   // 10 missed, spread over the run -> this reel takes half
+        Assert.Equal(1000 - 50 * 2 - 5 * 2, inv.Get(110)!.Remaining);
+    }
 }

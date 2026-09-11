@@ -108,6 +108,8 @@ public sealed class MachineChannel
     /// R0/R1/R2 with a monotonic "…TI&lt;n&gt;"), or null if the machine doesn't send one. Used only to detect
     /// blind spots — a jump means PVS missed messages while a serial link was down.</summary>
     public long? LastTxnId { get; private set; }
+    /// <summary>Real-time messages that arrived with the SAME transaction id as the previous one (retransmits) — not counted.</summary>
+    public long DuplicateMessages { get; private set; }
     /// <summary>Cumulative count of real-time messages PVS is confident it MISSED (gaps in the transaction ID)
     /// since the channel started. Non-zero means PVS's live board count may be short — read the machine's own
     /// counter (C1M) to get the truth. Zero when the machine sends no transaction ID (the detector is inert).</summary>
@@ -316,6 +318,7 @@ public sealed class MachineChannel
         // reconciler goes and reads the machine's own C1M counter (the truth). A LOWER TxnId means the machine
         // restarted its numbering (power cycle) — re-baseline, don't count that as a gap. Never touches the
         // count itself; this only flags "go verify". Inert when the machine sends no TxnId (LastTxnId stays null).
+        bool duplicate = false;
         if (msg.TxnId is long tx)
         {
             if (LastTxnId is long prev && tx > prev + 1)
@@ -325,6 +328,11 @@ public sealed class MachineChannel
                 LastGapAt = now;
                 CountGapSuspected?.Invoke(missed);
             }
+            // The SAME id again = the machine re-sent a message we already handled (ack lost on the wire). Its
+            // board-complete must not decrement the feeders a second time (audit 2026-09-11). A LOWER id is a
+            // renumbering after a machine restart, not a duplicate.
+            duplicate = LastTxnId is long p2 && tx == p2;
+            if (duplicate) DuplicateMessages++;
             // tx <= prev (re-baseline / rollover) or contiguous: just advance the marker.
             LastTxnId = tx;
         }
@@ -361,7 +369,7 @@ public sealed class MachineChannel
         BoardRate.Observe(msg, now);
         Condition.Observe(msg, now);   // latch the machine's own operating state (R1 stream)
 
-        if (msg.Kind == MessageKind.BoardComplete)
+        if (msg.Kind == MessageKind.BoardComplete && !duplicate)
         {
             BoardsSeen++;
             Inventory.OnBoardComplete();

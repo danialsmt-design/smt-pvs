@@ -343,4 +343,31 @@ public class MachineChannelTests
         ch.RequestProgram();
         Assert.Empty(sent);   // within the suppression window, no C3P on the wire
     }
+
+    [Fact]
+    public void A_retransmitted_board_complete_is_not_counted_twice()
+    {
+        var (ch, _) = Make();
+        ch.Inventory.Configure(108, "P", 4);
+        ch.Inventory.LoadReel(108, "uid", 4000);
+        int events = 0; ch.BoardCompleted += _ => events++;
+        ch.Feed(Frame("R0CTH1TI00000000010"), T0);
+        ch.Feed(Frame("R0CTH1TI00000000010"), T0.AddSeconds(1));   // same transaction id again = retransmit
+        ch.Feed(Frame("R0CTH1TI00000000011"), T0.AddSeconds(40));
+        Assert.Equal(2, ch.BoardsSeen);
+        Assert.Equal(2, events);
+        Assert.Equal(4000 - 2 * 4, ch.Inventory.Get(108)!.Remaining);
+        Assert.Equal(1, ch.DuplicateMessages);
+        Assert.Equal(11, ch.LastTxnId);
+    }
+
+    [Fact]
+    public void A_lower_transaction_id_is_a_renumbering_not_a_duplicate()
+    {
+        var (ch, _) = Make();
+        ch.Feed(Frame("R0CTH1TI00000000010"), T0);
+        ch.Feed(Frame("R0CTH1TI00000000001"), T0.AddSeconds(40));   // machine restarted its numbering
+        Assert.Equal(2, ch.BoardsSeen);
+        Assert.Equal(0, ch.DuplicateMessages);
+    }
 }
