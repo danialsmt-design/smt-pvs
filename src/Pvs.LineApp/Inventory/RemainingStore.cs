@@ -3,7 +3,9 @@ using System.Text.Json;
 namespace Pvs.LineApp.Inventory;
 
 /// <summary>One feeder's recorded remaining (the local record on the line PC).</summary>
-public sealed record RemainingEntry(int Machine, int Feeder, string Part, string Uid, int Remaining, DateTime At);
+/// <param name="BoardsRun">Boards this reel had been on the machine for when the record was written (its anchor), so
+/// a restart can restore how much of the run the reel really saw. 0 = unknown / loaded just now.</param>
+public sealed record RemainingEntry(int Machine, int Feeder, string Part, string Uid, int Remaining, DateTime At, int BoardsRun = 0);
 
 /// <summary>
 /// The line-local record of each feeder's remaining piece-count, persisted to remaining.json. This is the
@@ -59,8 +61,7 @@ public sealed class RemainingStore
     {
         try
         {
-            if (!File.Exists(_path)) return;
-            var list = JsonSerializer.Deserialize<List<RemainingEntry>>(File.ReadAllText(_path), JsonOpts);
+            var list = Pvs.Core.Persistence.AtomicFile.Load(_path, t => JsonSerializer.Deserialize<List<RemainingEntry>>(t, JsonOpts));
             if (list is null) return;
             lock (_gate)
                 foreach (var e in list) _map[(e.Machine, e.Feeder)] = e;
@@ -70,7 +71,7 @@ public sealed class RemainingStore
 
     private void Write()
     {
-        try { File.WriteAllText(_path, JsonSerializer.Serialize(_map.Values.ToList(), JsonOpts)); }
+        try { Pvs.Core.Persistence.AtomicFile.Write(_path, JsonSerializer.Serialize(_map.Values.ToList(), JsonOpts)); }
         catch { /* best-effort */ }
     }
 }

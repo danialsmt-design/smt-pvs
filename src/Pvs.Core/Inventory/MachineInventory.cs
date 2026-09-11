@@ -133,6 +133,24 @@ public sealed class MachineInventory
         }
     }
 
+    /// <summary>Restore a reel's ANCHOR after a re-baseline from its persisted boards-run (how many boards it had
+    /// been on the machine for when the local record was written). Re-expresses the same remaining with
+    /// LoadBoards = observed − boardsRun, so a later correction attributes only the run this reel really saw.
+    /// No-op if not tracked; boardsRun is clamped to the observed count.</summary>
+    public void SetBoardsRun(int feeder, int boardsRun)
+    {
+        lock (_lock)
+        {
+            if (!_feeders.TryGetValue(feeder, out var f) || !f.IsTracked) return;
+            int run = Math.Clamp(boardsRun, 0, _observed);
+            int remaining = f.Remaining;
+            f.StartQty = (int)Math.Min(int.MaxValue, remaining + (long)f.MountedPerBoard * run);
+            f.LoadBoards = _observed - run;
+            f.CorrectionBoards = 0;
+            Recompute(f);
+        }
+    }
+
     /// <summary>The exhaust-accuracy sample for a feeder right now: how many boards this reel has run (since its
     /// anchor, corrections included), the pieces PVS still THINKS remain (the error at a genuine parts-out — ideally
     /// ~0), its anchor qty and per-board rate. Null if not tracked.</summary>
@@ -222,8 +240,10 @@ public sealed class MachineInventory
         Recompute(f);
     }
 
+    // Display value: never below 0 (consumption past empty is kept in the anchor fields) and never above the
+    // anchor quantity (a hand-back can't create pieces the reel never had; audit round 3).
     private void Recompute(FeederState f) =>
-        f.Remaining = (int)Math.Max(0, Math.Min(int.MaxValue, (long)f.StartQty - (long)f.MountedPerBoard * BoardsRun(f, _observed)));
+        f.Remaining = (int)Math.Clamp((long)f.StartQty - (long)f.MountedPerBoard * BoardsRun(f, _observed), 0, f.StartQty);
 
     private FeederState Require(int feeder) =>
         _feeders.TryGetValue(feeder, out var f)

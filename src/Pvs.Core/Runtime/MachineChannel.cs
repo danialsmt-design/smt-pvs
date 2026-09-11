@@ -253,17 +253,26 @@ public sealed class MachineChannel
     }
 
     /// <summary>Feed a chunk of received characters (e.g. from SerialPort.ReadExisting()).</summary>
+    private readonly object _feedLock = new();
+    /// <summary>Frames that failed length/checksum and were dropped (a dropped R0 is a missed board — visible on /api/status).</summary>
+    public long DroppedFrames { get; private set; }
+
     public void Feed(string chunk, DateTime now)
     {
-        _buffer += chunk;
-        var frames = SonyFrame.Extract(_buffer, out var remainder);
-        _buffer = remainder;
-
-        foreach (var raw in frames)
+        // Serialised: .NET SerialPort raises DataReceived on thread-pool threads that CAN overlap, and the
+        // read-modify-write of _buffer (and the report-collection state) is not otherwise protected.
+        lock (_feedLock)
         {
-            if (SonyFrame.TryParse(raw, out var payload) && payload is not null)
-                Handle(SonyMessage.Parse(payload), now);
-            // else: bad checksum / malformed -> dropped
+            _buffer += chunk;
+            var frames = SonyFrame.Extract(_buffer, out var remainder);
+            _buffer = remainder;
+
+            foreach (var raw in frames)
+            {
+                if (SonyFrame.TryParse(raw, out var payload) && payload is not null)
+                    Handle(SonyMessage.Parse(payload), now);
+                else DroppedFrames++;   // bad checksum / malformed -> dropped (counted, so a lossy link is visible)
+            }
         }
     }
 

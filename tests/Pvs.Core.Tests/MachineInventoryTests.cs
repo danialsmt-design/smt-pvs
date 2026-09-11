@@ -215,4 +215,35 @@ public class MachineInventoryTests
         inv.SyncToBoardCount(0);                                 // that board never happened
         Assert.Equal(5, inv.Get(108)!.Remaining);                // exact (was 10)
     }
+
+    [Fact]
+    public void SetBoardsRun_restores_a_reels_anchor_after_a_re_baseline()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 4); inv.Configure(109, "B", 4);
+        inv.LoadReel(108, "a", 3600);   // restored balances after a restart (both already reflect the run)
+        inv.LoadReel(109, "b", 3960);
+        inv.SeedBoardsApplied(100);     // run tally 100: without more info both look present all run
+        inv.SetBoardsRun(109, 10);      // the local record says reel b had run only 10 boards
+        Assert.Equal(3960, inv.Get(109)!.Remaining);   // remaining unchanged by the anchor restore
+        inv.SyncToBoardCount(120);      // 20 boards missed during the run
+        Assert.Equal(3600 - 20 * 4, inv.Get(108)!.Remaining);          // present all run: takes all 20
+        Assert.Equal(3960 - 2 * 4, inv.Get(109)!.Remaining);           // ran 10 of 100: takes 2
+    }
+
+    [Fact]
+    public void Remaining_never_exceeds_the_anchor_quantity()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 4); inv.Configure(109, "B", 4);
+        inv.LoadReel(108, "a", 4000);
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();
+        inv.LoadReel(109, "b", 4000);                          // loaded at 50
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();    // observed 100
+        inv.SyncToBoardCount(120);                             // b gets +10
+        for (int i = 0; i < 100; i++) inv.OnBoardComplete();   // observed 200, tally 220
+        inv.SyncToBoardCount(0);                               // operator keys 0 — b would go to 4020 unclamped
+        Assert.Equal(4000, inv.Get(109)!.Remaining);
+        Assert.Equal(4000, inv.Get(108)!.Remaining);
+    }
 }

@@ -166,8 +166,9 @@ public sealed class SessionCoordinator : IDisposable
         LoadModelCache();     // restore the last model so the UI isn't stuck if serial/DB is down at startup
         _dpc.SlotOf = DpcSlot;   // one DPC bucket per shift/day slot, so a row never straddles 07:35 / 19:35 / midnight (audit H9)
         LoadDpcState();       // restore the monotonic M4 total FIRST (the lot count is derived from it) + DPC counters
-        LoadMachineTally();   // restore per-machine tally offsets (HMI / C1Z corrections) so a re-baseline keeps them (audit H6)
         LoadLotProgress();    // restore the lot anchor so a restart mid-lot recomputes the count (needs _m4PanelsTotal)
+        LoadMachineTally();   // restore per-machine tally offsets — AFTER the lot (they are kept only for _lotCountFor; loading them
+                              // before it silently discarded every correction on every restart — audit 2026-09-11)
         LoadManualLot();      // restore the operator's manual lot choice so it survives a restart
         LoadPendingSlip();    // restore a held next-lot slip (opens when the current lot completes)
         LoadFeederMapCache(); // per-model feeder maps (local copy of ProductBOM) — BEFORE the manual list, whose forced loads take counts from it
@@ -772,7 +773,7 @@ public sealed class SessionCoordinator : IDisposable
         try
         {
             MachineTallyData d; lock (_gate) d = new MachineTallyData(_currentLotNo, new Dictionary<int, int>(_tallyOffset));
-            System.IO.File.WriteAllText(MachineTallyPath, System.Text.Json.JsonSerializer.Serialize(d));
+            Pvs.Core.Persistence.AtomicFile.Write(MachineTallyPath, System.Text.Json.JsonSerializer.Serialize(d));
         }
         catch (Exception ex) { _log.LogDebug(ex, "machine-tally save failed."); }
     }
@@ -782,7 +783,7 @@ public sealed class SessionCoordinator : IDisposable
         try
         {
             if (!System.IO.File.Exists(MachineTallyPath)) return;
-            var d = System.Text.Json.JsonSerializer.Deserialize<MachineTallyData>(System.IO.File.ReadAllText(MachineTallyPath));
+            var d = Pvs.Core.Persistence.AtomicFile.Load(MachineTallyPath, __t => System.Text.Json.JsonSerializer.Deserialize<MachineTallyData>(__t));
             if (d is null || d.Offsets is null) return;
             lock (_gate)
             {
@@ -852,7 +853,7 @@ public sealed class SessionCoordinator : IDisposable
         long total; lock (_gate) total = _m4PanelsTotal;
         var d = new DpcStateData(total,
             _dpc.Snapshot().Select(b => new DpcBucketRow(b.Key.Lot, b.Key.Model, b.Key.Side, b.Panels, b.FirstAt)).ToList());
-        try { System.IO.File.WriteAllText(DpcStatePath, System.Text.Json.JsonSerializer.Serialize(d)); }
+        try { Pvs.Core.Persistence.AtomicFile.Write(DpcStatePath, System.Text.Json.JsonSerializer.Serialize(d)); }
         catch (Exception ex) { _log.LogDebug(ex, "DPC state save failed."); }
     }
 
@@ -861,8 +862,7 @@ public sealed class SessionCoordinator : IDisposable
         try
         {
             if (!System.IO.File.Exists(DpcStatePath)) return;
-            var d = System.Text.Json.JsonSerializer.Deserialize<DpcStateData>(
-                System.IO.File.ReadAllText(DpcStatePath), new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var d = Pvs.Core.Persistence.AtomicFile.Load(DpcStatePath, __t => System.Text.Json.JsonSerializer.Deserialize<DpcStateData>(__t, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }));
             if (d is null) return;
             _m4PanelsTotal = d.M4PanelsTotal;
             // Unwritten panels survive a restart so the next flush neither re-writes nor loses them. With the
@@ -908,7 +908,18 @@ public sealed class SessionCoordinator : IDisposable
     /// row can never start after it ends. A bucket is cleared only after its row is confirmed written, so a DB
     /// failure just retries next window (no loss, no double-write). Nothing to flush -> no-op.
     /// </summary>
+    private readonly SemaphoreSlim _flushLock = new(1, 1);
+
     public async Task FlushProductionCountAsync(CancellationToken ct = default)
+    {
+        // One flush at a time: the 5-min timer, a force-end and the manual endpoint could overlap and both insert
+        // the same bucket before either committed it (duplicate DPC row; audit 2026-09-11).
+        if (!await _flushLock.WaitAsync(0, ct)) return;
+        try { await FlushProductionCountCoreAsync(ct); }
+        finally { _flushLock.Release(); }
+    }
+
+    private async Task FlushProductionCountCoreAsync(CancellationToken ct)
     {
         if (!_config.WriteProductionCount || NonCanon) return;   // non-Canon: no Canon lot/model to attribute a count to
         DateTime winEnd = DateTime.Now;
@@ -1000,7 +1011,7 @@ public sealed class SessionCoordinator : IDisposable
     {
         LotProgressData d;
         lock (_gate) d = new LotProgressData(_lotCountFor, LotPanels(), _lotExtra, _lotTarget, _lotAnchorTotal, _lotSideFor);
-        try { System.IO.File.WriteAllText(LotProgressPath, System.Text.Json.JsonSerializer.Serialize(d)); }
+        try { Pvs.Core.Persistence.AtomicFile.Write(LotProgressPath, System.Text.Json.JsonSerializer.Serialize(d)); }
         catch (Exception ex) { _log.LogDebug(ex, "Lot progress save failed."); }
     }
 
@@ -1009,8 +1020,7 @@ public sealed class SessionCoordinator : IDisposable
         try
         {
             if (!System.IO.File.Exists(LotProgressPath)) return;
-            var d = System.Text.Json.JsonSerializer.Deserialize<LotProgressData>(
-                System.IO.File.ReadAllText(LotProgressPath), new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var d = Pvs.Core.Persistence.AtomicFile.Load(LotProgressPath, __t => System.Text.Json.JsonSerializer.Deserialize<LotProgressData>(__t, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }));
             if (d is null) return;
             _lotCountFor = d.LotNo ?? ""; _lotExtra = d.Extra; _lotTarget = d.Target; _lotSideFor = d.Side ?? "";
             // Prefer the persisted anchor; migrate an OLD file (no anchor) by back-computing it from its saved Panels.
@@ -1051,7 +1061,7 @@ public sealed class SessionCoordinator : IDisposable
     private void SaveManualLot()
     {
         string? lot, tag; lock (_gate) { lot = _manualLotNo; tag = _manualLotModel; }
-        try { System.IO.File.WriteAllText(ManualLotPath, System.Text.Json.JsonSerializer.Serialize(new ManualLotData(lot, tag))); }
+        try { Pvs.Core.Persistence.AtomicFile.Write(ManualLotPath, System.Text.Json.JsonSerializer.Serialize(new ManualLotData(lot, tag))); }
         catch (Exception ex) { _log.LogDebug(ex, "Manual lot save failed."); }
     }
 
@@ -1166,6 +1176,7 @@ public sealed class SessionCoordinator : IDisposable
             // must start there too — RefreshLotAsync just seeded 0, which made the lot-end recalc / an HMI sync draw
             // those boards' pieces a second time. (Audit finding H7, 2026-09-07.)
             foreach (var ch in _channels.Values) ch.Inventory.SeedBoardsApplied(seedPanels);
+            ClearTallyOffsets();   // the seed re-anchored every machine; earlier corrections are inside the feeder counts now
         }
         await _records.WriteAsync(new VerificationRecord(DateTime.Now, _config.LineName, "LotChange", 0, 0,
             string.IsNullOrWhiteSpace(lotNo) ? "(auto)" : lotNo, Supervisor: badge.Name, Overridden: true,
@@ -1211,7 +1222,7 @@ public sealed class SessionCoordinator : IDisposable
         {
             Pvs.Core.Boards.MagazineSlip? p; lock (_gate) p = _pendingSlip;
             if (p is null) { if (System.IO.File.Exists(PendingSlipPath)) System.IO.File.Delete(PendingSlipPath); }
-            else System.IO.File.WriteAllText(PendingSlipPath, System.Text.Json.JsonSerializer.Serialize(p));
+            else Pvs.Core.Persistence.AtomicFile.Write(PendingSlipPath, System.Text.Json.JsonSerializer.Serialize(p));
         }
         catch (Exception ex) { _log.LogDebug(ex, "pending-slip save failed."); }
     }
@@ -1910,7 +1921,18 @@ public sealed class SessionCoordinator : IDisposable
             .OrderBy(m => m.Machine).ThenBy(m => m.Feeder).ToList();
     }
 
+    private readonly SemaphoreSlim _baselineLock = new(1, 1);
+
     public async Task RefreshInventoryAsync(CancellationToken ct = default)
+    {
+        // One baseline at a time: auto-detect (5 s) and the startup timer (8 s) both call this; interleaving their
+        // Clear/Configure/LoadReel steps threw "feeder not configured" and left feeders untracked (audit 2026-09-11).
+        await _baselineLock.WaitAsync(ct);
+        try { await RefreshInventoryCoreAsync(ct); }
+        finally { _baselineLock.Release(); }
+    }
+
+    private async Task RefreshInventoryCoreAsync(CancellationToken ct)
     {
         Product? model; string side;
         lock (_gate) { model = Model; side = Side ?? "A"; }
@@ -1930,6 +1952,7 @@ public sealed class SessionCoordinator : IDisposable
         if (feeders.Count == 0) { _log.LogWarning("Inventory baseline skipped — feeder list (_expected) empty for {Model} ({Side}).", model.Name, side); return; }
 
         int panels = _config.PanelBoardsFor(model.Name);   // child boards per panel (a cycle mounts a full panel)
+        var restoreRun = new Dictionary<(int, int), int>();   // per reel: boards it had run at its last local record (anchor restore)
         if (!_config.HasPanelBoards(model.Name))
             _log.LogWarning("Model {Model} has NO panelBoards entry — boards-per-panel defaulted to 1. Decrement, lot progress and DPC will be off by the true factor until line.config.json gets an entry. (Audit H8)", model.Name);
         var wrongPart = new List<(int Machine, int Feeder, string Part, string Uid)>();
@@ -1954,19 +1977,21 @@ public sealed class SessionCoordinator : IDisposable
                 wrongPart.Add((f.Machine, f.Feeder, reel.Part, reel.Uid));
                 continue;
             }
-            // Remaining is UID-tracked in the DB (StockOuts.Quantity, kept current — verified == live remaining, not
-            // the issued full qty), so pull it from the DB by UID as the AUTHORITATIVE source: a restart or a wiped
-            // local file still restores the correct balance. The local record is the fallback if the DB has no row /
-            // the link is down. (Wrapped so one failed lookup doesn't abort the whole baseline.)
-            int? qty = null;
-            try { qty = await _repo.FindStockOutQtyAsync(reel.Uid, f.Part, ct); } catch { qty = null; }
+            // The LOCAL record (remaining.json) is the authority for a reel already on the feeder: it is written every
+            // 5 min AND immediately on every correction (HMI key-in, C1Z apply, recount, lot-end recalc, parts-change
+            // qty). StockOuts.Quantity by UID is only the ISSUED reference for a reel with no local record yet — on a
+            // line with syncStockOuts off it is never written back, so preferring it (as this code did) put every reel
+            // back to its full issued quantity at every restart and after every shift/model-change check; on L1 it
+            // lagged the local record by up to 5 min and dropped fresh corrections. (Restart audit 2026-09-11.)
+            int? qty = null; int boardsRun = 0;
+            var loc = _remaining.Get(f.Machine, f.Feeder);
+            if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
+            { qty = loc.Remaining; boardsRun = loc.BoardsRun; }
             if (qty is null)
             {
-                var loc = _remaining.Get(f.Machine, f.Feeder);
-                if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
-                    qty = loc.Remaining;
+                try { qty = await _repo.FindStockOutQtyAsync(reel.Uid, f.Part, ct); } catch { qty = null; }
             }
-            if (qty is int q && q > 0) ch.Inventory.LoadReel(f.Feeder, reel.Uid, q);
+            if (qty is int q && q > 0) { ch.Inventory.LoadReel(f.Feeder, reel.Uid, q); if (boardsRun > 0) restoreRun[(f.Machine, f.Feeder)] = boardsRun; }
         }
 
         // OFF-LIST REELS ARE UNLOADED AUTOMATICALLY (Danial, 2026-09-07: "if the parts are not on the feeder list for
@@ -2014,6 +2039,10 @@ public sealed class SessionCoordinator : IDisposable
         // correction away and the next sync never re-applies it (audit H6).
         foreach (var ch in _channels.Values)
             ch.Inventory.SeedBoardsApplied(Math.Max(0, seed + (offsets.TryGetValue(ch.Machine, out var off) ? off : 0)));
+        // Put each reel's anchor back where its last local record had it (boards it had really run), so a later
+        // correction is shared by the run each reel saw — not charged in full to a reel loaded just before the restart.
+        foreach (var kv in restoreRun)
+            if (_channels.TryGetValue(kv.Key.Item1, out var rch)) rch.Inventory.SetBoardsRun(kv.Key.Item2, kv.Value);
 
         _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}{Offsets}.", model.Name, side, feeders.Count, extra, seed,
             offsets.Count == 0 ? "" : " with offsets " + string.Join(", ", offsets.Select(kv => $"M{kv.Key}:{kv.Value:+#;-#;0}")));
@@ -2027,6 +2056,9 @@ public sealed class SessionCoordinator : IDisposable
     /// keeps the record on the line PC only and never touches the parts-control DB. Runs every 5 min and
     /// on demand; returns the number of feeders recorded.
     /// </summary>
+    /// <summary>Boards a feeder's reel has been on the machine for (its anchor), persisted with the local record.</summary>
+    private static int RunOf(Pvs.Core.Runtime.MachineChannel ch, int feeder) => ch.Inventory.ReelUsage(feeder)?.BoardsThisReel ?? 0;
+
     public Task<int> RecordRemainingAsync(CancellationToken ct = default)
     {
         var items = new List<Pvs.LineApp.Inventory.RemainingEntry>();
@@ -2034,7 +2066,7 @@ public sealed class SessionCoordinator : IDisposable
             foreach (var f in ch.Inventory.Feeders)
                 if (f.IsTracked && !string.IsNullOrWhiteSpace(f.ReelUid))
                     items.Add(new Pvs.LineApp.Inventory.RemainingEntry(
-                        ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, f.Remaining, DateTime.Now));
+                        ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
         // Guard: never overwrite the saved balances with an EMPTY set. Right after a restart (before the
         // feeders are grounded by a shift/model check) nothing is tracked yet; saving empty here would wipe
         // the last-known balances that remaining.json holds as the source of truth. Skip until we have data.
@@ -2338,7 +2370,7 @@ public sealed class SessionCoordinator : IDisposable
         // Persist every tracked feeder's corrected remaining so the correction survives a restart.
         var tracked = ch.Inventory.Feeders.Where(f => f.IsTracked).ToList();
         foreach (var f in tracked)
-            _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now));
+            _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineCountSync", tracked.Count, 0,
             $"M{machine} boards {before}->{hmiPanels} (delta {delta})", Supervisor: actor, Quantity: hmiPanels,
             Overridden: true, Note: "operator HMI board-count override; feeder draw-down corrected", LotNo: _currentLotNo));
@@ -2537,13 +2569,16 @@ public sealed class SessionCoordinator : IDisposable
         {
             delta = panels - before;
             would = Math.Abs(delta) >= TallyMinDeltaPanels;
-            verdict = !would ? "aligned" : mode == "apply" ? "applied" : "would-apply";
-            if (would && mode == "apply")
+            // A machine count BELOW PVS's tally means the machine's counter was reset under us (or the report predates
+            // the reset) — the same case AdoptLotCount refuses. Never hand pieces back automatically; record only.
+            bool backwards = delta < 0;
+            verdict = !would ? "aligned" : backwards ? "backwards" : mode == "apply" ? "applied" : "would-apply";
+            if (would && !backwards && mode == "apply")
             {
                 int d = ch.Inventory.SyncToBoardCount(panels);
                 NoteTallyOffset(machine, panels);   // keep this correction across re-baselines (audit H6)
                 foreach (var f in ch.Inventory.Feeders.Where(f => f.IsTracked))
-                    _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now));
+                    _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
                 applied = true;
                 Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineTallySync", machine, 0,
                     $"M{machine} boards {before}->{panels} (delta {d}) from machine pickups", Supervisor: "machine (C1Z)",

@@ -137,8 +137,8 @@ public sealed class FeederReelStore
     {
         try
         {
-            if (!File.Exists(_path)) return;
-            var list = JsonSerializer.Deserialize<List<FeederReel>>(File.ReadAllText(_path));
+            
+            var list = Pvs.Core.Persistence.AtomicFile.Load(_path, t => JsonSerializer.Deserialize<List<FeederReel>>(t));
             if (list is null) return;
             lock (_gate)
                 foreach (var r in list) _map[(r.Machine, r.Feeder)] = r;
@@ -148,7 +148,7 @@ public sealed class FeederReelStore
 
     private void Save()
     {
-        try { File.WriteAllText(_path, JsonSerializer.Serialize(_map.Values.ToList())); }
+        try { Pvs.Core.Persistence.AtomicFile.Write(_path, JsonSerializer.Serialize(_map.Values.ToList())); }
         catch { /* best-effort persistence */ }
     }
 }
