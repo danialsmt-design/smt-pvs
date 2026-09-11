@@ -158,6 +158,41 @@ PARTS REQUEST (auto)
 ## Automatic functions (no one triggers)
 
 ### Board count  ▫ to write
+### Board tally correction (HMI key-in · machine mount count · lot-end recalc)  🔧draft (rebuilt 2026-09-11 after external audit)
+*The feeders decrement per observed board-complete; a correction sets the tally to a KNOWN count and shares the
+difference among the reels. Every reel is ANCHORED (qty at anchor · observed boards at anchor · correction boards
+since) and its remaining is DERIVED from the anchor — never a running balance.*
+
+```
+BOARD TALLY CORRECTION
+│
+├─ TRIGGER  operator keys the HMI panel count · C1Z tally sync (apply) · lot-end recalc to lot size / produced
+│
+├─ GATE  a lot is tracked on this machine ?  and  |delta| ≥ 2 panels (sync) / beyond tolerance (recalc) ?
+│     ├─ no  → nothing changes
+│     └─ yes ↓
+│
+├─ ACTION  delta = known count − (observed + corrections so far)
+│     for each TRACKED reel:  share = (observed − reel.LoadBoards) / observed      (0 if loaded/recounted just now, 1 if here all run)
+│                            reel.CorrectionBoards += round(delta × share)
+│                            reel.remaining = StartQty − mount × (observed − LoadBoards + CorrectionBoards)   (clamped ≥0 for display)
+│     machine.correction += delta
+│
+├─ INVARIANTS
+│     • a reel loaded AFTER the missed boards is never charged for them (share 0 at load)
+│     • a physical recount / reel load is a FRESH ANCHOR — nothing from before it is ever re-charged
+│     • the run re-baseline (restart / lot change) re-anchors every reel at the run's start with its current remaining
+│     • a correction and its exact reversal cancel to the piece (share uses OBSERVED boards only)
+│     • a deduction past zero keeps the true consumption — reversing it restores the exact value
+│
+├─ MUST NOT
+│     ✗ apply the whole delta to every reel     ✗ mutate remaining as a running balance     ✗ touch StockOut here
+│
+├─ OUTPUT  audit MachineCountSync / MachineTallySync / LotUsageRecalc; remaining persisted; StockOut sync follows
+│
+└─ REVERSE  key the previous count again (same observed boards) → every reel returns exactly
+```
+
 ### Feeder decrement per board  ▫ to write
 ### Parts-out retire (consume)  ▫ to write
 ### StockOut sync  ▫ to write

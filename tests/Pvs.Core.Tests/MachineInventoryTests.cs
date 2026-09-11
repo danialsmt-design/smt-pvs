@@ -157,4 +157,62 @@ public class MachineInventoryTests
         inv.SyncToBoardCount(110);                   // 10 missed, spread over the run -> this reel takes half
         Assert.Equal(1000 - 50 * 2 - 5 * 2, inv.Get(110)!.Remaining);
     }
+
+    // ---- External audit round 2 (2026-09-11): the four confirmed count errors, now fixed by the anchored model ----
+
+    [Fact]
+    public void Audit1_correcting_and_reversing_a_count_leaves_every_reel_exactly_as_before()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 4); inv.Configure(109, "B", 4);
+        inv.LoadReel(108, "a", 1500);                       // from the start of the run
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();
+        inv.LoadReel(109, "b", 1500);                       // loaded at panel 50
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete(); // observed 100
+        int a0 = inv.Get(108)!.Remaining, b0 = inv.Get(109)!.Remaining;
+        inv.SyncToBoardCount(120);                          // +20
+        inv.SyncToBoardCount(100);                          // …and back
+        Assert.Equal(a0, inv.Get(108)!.Remaining);          // was 1517 with the running-balance version
+        Assert.Equal(b0, inv.Get(109)!.Remaining);
+        Assert.Equal(100, inv.BoardsApplied);
+    }
+
+    [Fact]
+    public void Audit2_a_reel_carried_into_the_next_run_counts_as_present_for_the_whole_run()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 2);
+        inv.LoadReel(108, "a", 1000);
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();     // previous lot: 900 left
+        inv.SeedBoardsApplied(0);                                // lot change: tally restarts, reel stays on
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();     // new lot: 800 left
+        inv.SyncToBoardCount(100);                               // HMI: 50 more boards this lot PVS missed
+        Assert.Equal(900 - 2 * 100, inv.Get(108)!.Remaining);    // 100 boards this lot × 2 = 700; takes the whole correction (was half)
+    }
+
+    [Fact]
+    public void Audit3_a_physical_recount_is_a_fresh_baseline_that_an_earlier_miss_cannot_re_charge()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 4);
+        inv.LoadReel(108, "a", 4000);
+        for (int i = 0; i < 50; i++) inv.OnBoardComplete();     // PVS: 3800; in truth 50 boards were missed too
+        inv.SetRemaining(108, 1000);                             // operator physically counts 1000 — the truth, misses included
+        inv.SyncToBoardCount(100);                               // now the tally is corrected for those earlier misses
+        Assert.Equal(1000, inv.Get(108)!.Remaining);             // nothing from before the recount is charged again (was 800)
+        inv.OnBoardComplete();
+        Assert.Equal(996, inv.Get(108)!.Remaining);              // and it keeps counting from the recount
+    }
+
+    [Fact]
+    public void Audit4_reversing_a_board_after_the_count_hit_zero_restores_the_true_value()
+    {
+        var inv = new MachineInventory(1);
+        inv.Configure(108, "A", 10);
+        inv.LoadReel(108, "a", 5);
+        inv.OnBoardComplete();                                   // 5 − 10 → shows 0
+        Assert.Equal(0, inv.Get(108)!.Remaining);
+        inv.SyncToBoardCount(0);                                 // that board never happened
+        Assert.Equal(5, inv.Get(108)!.Remaining);                // exact (was 10)
+    }
 }
