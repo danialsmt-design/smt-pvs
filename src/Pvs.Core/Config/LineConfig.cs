@@ -264,11 +264,10 @@ public sealed class LineConfig
     /// e.g. to run serial-port test software). Defaults to "100732" when not set in the config.</summary>
     public string ShutdownPassword { get; set; } = "100732";
 
-    /// <summary>
-    /// Write live per-feeder remaining balances (by reel UID) back to StockOuts.Quantity every few minutes.
-    /// Requires the pvs_ro login to have UPDATE on StockOuts.Quantity (already granted). Off by default.
-    /// </summary>
-    public bool SyncStockOuts { get; set; }
+    // "syncStockOuts" was a per-line pilot flag (on only for L1). Removed 2026-09-14 (Danial: "remove the flag and
+    // keep it on always"): every line writes its live reel balances back to StockOuts.Quantity by UID — the reel
+    // balance IS StockOut for the loaded reel, and PVS keeps it current. A stale "syncStockOuts" key in a box config
+    // is ignored by the JSON reader.
 
     /// <summary>
     /// Write PVS's live board count for this line to DailyProductionCount as an incremental row every 30 min

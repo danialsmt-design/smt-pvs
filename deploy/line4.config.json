@@ -9,7 +9,6 @@
 //       to that subnet, else Tailscale 100.91.120.113,1433.
 //   (3) db-password.txt (the 4-char pvs_ro secret) is COPIED from Line 1, NOT stored here.
 //   (4) Confirm which models run on Line 4 and that their ProductBOM has Line-4 rows (BOM gap = no verify).
-//   (5) Pilot: keep syncStockOuts + writeProductionCount OFF until the operator-app / DPC handover (like L1).
 {
   "lineId": 4,
   "lineName": "LINE4PVS",
@@ -43,6 +42,5 @@
 
   // writeProductionCount ON — PVS is the DPC writer for this line (external logger 192.168.0.190 died 2026-08-14).
   // Do NOT let a redeploy revert it to false: that silently stops production recording.
-  "syncStockOuts": false,
   "writeProductionCount": true
 }

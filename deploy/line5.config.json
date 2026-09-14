@@ -38,6 +38,5 @@
 
   // writeProductionCount ON — PVS is the DPC writer for this line (operator app stopped). Do NOT let a redeploy
   // revert it to false: that silently stops production recording.
-  "syncStockOuts": false,
   "writeProductionCount": true
 }

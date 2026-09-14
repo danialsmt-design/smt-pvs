@@ -326,7 +326,21 @@ app.MapGet("/api/health", (LineService line) =>
     bool ppKnown = modelName is null || line.Config.HasPanelBoards(modelName);
     string ppSig = modelName is null ? "na" : ppKnown ? "ok" : "warn";
 
-    var sigs = new[] { serial, prod, prog, check, db, dt, rec, ppSig };
+    // 9) StockOut WRITE-BACK — is the reel balance actually landing in StockOuts? (always on since 2026-09-14)
+    //    WARN when the last pass failed or nothing has been written for > 12 min while reels are tracked.
+    var so = co?.StockOutSyncStatus();
+    string soSig = "na"; DateTime? soOk = null; string? soErr = null; int soWritten = 0, soTracked = 0;
+    if (so is not null)
+    {
+        var t = so.GetType();
+        soOk = (DateTime?)t.GetProperty("lastOkAt")!.GetValue(so); soErr = (string?)t.GetProperty("lastError")!.GetValue(so);
+        soWritten = (int)t.GetProperty("written")!.GetValue(so)!; soTracked = (int)t.GetProperty("tracked")!.GetValue(so)!;
+        var attempt = (DateTime?)t.GetProperty("lastAttemptAt")!.GetValue(so);
+        bool stale = soTracked > 0 && (soOk is null || (now - soOk.Value) > TimeSpan.FromMinutes(12));
+        soSig = attempt is null && soTracked == 0 ? "na" : soErr is not null ? "warn" : stale ? "warn" : "ok";
+    }
+
+    var sigs = new[] { serial, prod, prog, check, db, dt, rec, ppSig, soSig };
     string status = sigs.Contains("down") ? "down" : sigs.Contains("warn") ? "warn" : "ok";
 
     return Results.Ok(new
@@ -346,7 +360,8 @@ app.MapGet("/api/health", (LineService line) =>
             recording = new { state = rec, pendingPanels = recPending, oldestPendingMin = recOldestMin,
                               lastWriteAt = co?.LastProductionWriteAt, lastWriteError = co?.LastProductionWriteError },
             perPanel = new { state = ppSig, model = modelName, boardsPerPanel = modelName is null ? (int?)null : line.Config.PanelBoardsFor(modelName),
-                             detail = ppKnown ? null : $"no panelBoards entry for {modelName} — counting 1 board per panel" }
+                             detail = ppKnown ? null : $"no panelBoards entry for {modelName} — counting 1 board per panel" },
+            stockOut = new { state = soSig, lastOkAt = soOk, written = soWritten, tracked = soTracked, lastError = soErr }
         }
     });
 });
@@ -896,8 +911,6 @@ app.MapPost("/api/inventory/sync", async (LineService line) =>
 {
     if (line.Coordinator is null) return Results.Ok(new { message = "coordinator not ready", written = 0 });
     await line.Coordinator.RecordRemainingAsync();
-    if (!line.Config.SyncStockOuts)
-        return Results.Ok(new { message = "recorded locally; StockOuts write-back is disabled (set SyncStockOuts=true)", written = 0 });
     int n = await line.Coordinator.SyncRemainingToStockOutsAsync();
     return Results.Ok(new { message = $"wrote {n} reel balances to StockOuts", written = n });
 });

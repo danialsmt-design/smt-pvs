@@ -227,6 +227,7 @@
   <div class="brand"><span class="dot"></span><h1>Parts Verification</h1><span class="sub">Operator</span></div>
   <span id="model">no model selected</span>
   <span id="healthPill" class="hpill hp-idle" onclick="toggleHealth()">● Line health</span>
+  <span id="stockPill" class="hpill hp-idle" title="StockOut write-back: the reel balance PVS counts down is written to StockOuts by reel UID" onclick="toggleHealth()">🗄 StockOut</span>
   <nav class="nav">
     <a class="mon back" href="/setup.html">⚙ Model &amp; lot</a>
     <a class="mon" href="/machine-inv.html">Machine inv →</a>
@@ -1231,7 +1232,7 @@ setInterval(()=>{ if(stopState && stopState.down){ stopState.openSeconds++; rend
 
 // ---- Line health pill (rollup of serial / producing / program / check / DB / downtime) ----
 let healthOpen=false;
-const H_SIG=[['serial','Serial link / စီရီယယ်'],['producing','Producing / ထုတ်နေ'],['program','Program / ပရိုဂရမ်'],['check','Shift check / အလှည့်စစ်'],['db','DB link / DB'],['downtime','Downtime / ရပ်ချိန်']];
+const H_SIG=[['serial','Serial link / စီရီယယ်'],['producing','Producing / ထုတ်နေ'],['program','Program / ပရိုဂရမ်'],['check','Shift check / အလှည့်စစ်'],['db','DB link / DB'],['stockOut','StockOut write / စတော့ရေး'],['downtime','Downtime / ရပ်ချိန်']];
 function toggleHealth(){ healthOpen=!healthOpen; $('healthPop').classList.toggle('show',healthOpen); }
 // ---- Delivery robot (through the MCS dispatcher on the NAS) ----
 let robotSt=null;
@@ -1280,6 +1281,15 @@ async function refreshHealth(){
   const st=h.status||'idle', pill=$('healthPill');
   pill.className='hpill hp-'+st;
   pill.textContent = st==='parked' ? '▣ Non-Canon (paused)' : '● Line '+({ok:'OK',warn:'WARN',down:'DOWN'}[st]||'—');
+  // StockOut write-back chip: ✓ + time of the last successful write, or ✗ + why
+  const so=(h.signals&&h.signals.stockOut)||{}, sp=$('stockPill');
+  if(sp){
+    const sost = so.state||'na';
+    sp.className='hpill hp-'+(sost==='ok'?'ok':sost==='warn'?'warn':'idle');
+    sp.textContent = sost==='ok' ? '🗄 StockOut ✓ '+(so.lastOkAt?new Date(so.lastOkAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):'')
+                   : sost==='warn' ? '🗄 StockOut ✗ '+(so.lastError?so.lastError.slice(0,40):'stale')
+                   : '🗄 StockOut —';
+  }
   $('healthRows').innerHTML = H_SIG.map(([k,label])=>{
     const s=(h.signals&&h.signals[k])||{}, state=s.state||'na';
     let extra='';
@@ -1287,6 +1297,7 @@ async function refreshHealth(){
     if(k==='serial'&&s.machines){ const bad=s.machines.filter(m=>m.state==='down'||m.state==='warn').map(m=>'M'+m.machine); if(bad.length) extra=' · '+bad.join(','); }
     if(k==='downtime'&&s.minutesToday!=null&&s.minutesToday>0) extra=' · '+s.minutesToday+'m';
     if(k==='program'&&s.disagree) extra=' · disagree';
+    if(k==='stockOut'){ if(s.lastError) extra=' · '+s.lastError; else if(s.lastOkAt) extra=' · '+new Date(s.lastOkAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+' · '+s.tracked+' reels'; }
     return `<div class="hrow"><span><span class="hdot hs-${state}"></span>${label}</span><span>${state.toUpperCase()}${extra}</span></div>`;
   }).join('');
 }

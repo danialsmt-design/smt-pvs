@@ -1979,10 +1979,10 @@ public sealed class SessionCoordinator : IDisposable
             }
             // The LOCAL record (remaining.json) is the authority for a reel already on the feeder: it is written every
             // 5 min AND immediately on every correction (HMI key-in, C1Z apply, recount, lot-end recalc, parts-change
-            // qty). StockOuts.Quantity by UID is only the ISSUED reference for a reel with no local record yet — on a
-            // line with syncStockOuts off it is never written back, so preferring it (as this code did) put every reel
-            // back to its full issued quantity at every restart and after every shift/model-change check; on L1 it
-            // lagged the local record by up to 5 min and dropped fresh corrections. (Restart audit 2026-09-11.)
+            // qty). StockOuts.Quantity by UID is only the ISSUED reference for a reel with no local record yet — before
+            // 2026-09-14 the lines without write-back never updated it, so preferring it put every reel back to its
+            // full issued quantity at every restart and check; and it lags the local record by up to one timer tick.
+            // (Restart audit 2026-09-11.) Write-back is now always on, so the two agree within a tick.
             int? qty = null; int boardsRun = 0;
             var loc = _remaining.Get(f.Machine, f.Feeder);
             if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -2074,48 +2074,72 @@ public sealed class SessionCoordinator : IDisposable
         return Task.FromResult(items.Count);
     }
 
-    /// <summary>Timer body: always record local remaining; also mirror to StockOuts when SyncStockOuts is on.</summary>
+    /// <summary>Timer body: record local remaining, then mirror every reel balance to StockOuts (always on).</summary>
     private async Task RecordAndSyncAsync(CancellationToken ct = default)
     {
         if (NonCanon) return;   // no Canon BOM/feeders to record or mirror to StockOuts
         try { await RecordRemainingAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Local remaining record failed."); }
         try { await RefreshLotCoverageAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Lot coverage refresh failed."); }
-        if (_config.SyncStockOuts)
-        {
-            try { await SyncRemainingToStockOutsAsync(ct); } catch (Exception ex) { _log.LogWarning(ex, "StockOuts sync pass failed."); }
-        }
+        try { await SyncRemainingToStockOutsAsync(ct); } catch (Exception ex) { _log.LogWarning(ex, "StockOuts sync pass failed."); }
     }
 
     private readonly Dictionary<string, int> _lastSynced = new();  // reel UID -> last remaining written to StockOuts (skip unchanged)
+    private readonly SemaphoreSlim _stockOutLock = new(1, 1);
+    private DateTime? _stockOutLastOkAt, _stockOutLastAttemptAt; private int _stockOutLastWritten, _stockOutTracked; private string? _stockOutLastError;
+
+    /// <summary>StockOut write-back status for the health endpoint / operator screen: when the last pass ran, how
+    /// many reels it wrote, and the last error (a failed UPDATE means the parts-control balance is going stale).</summary>
+    public object StockOutSyncStatus()
+    {
+        lock (_gate)
+            return new { lastAttemptAt = _stockOutLastAttemptAt, lastOkAt = _stockOutLastOkAt, written = _stockOutLastWritten,
+                         tracked = _stockOutTracked, lastError = _stockOutLastError };
+    }
+
+    /// <summary>Write the balances to StockOuts NOW (fire-and-forget, never blocks the caller) — after a correction,
+    /// so StockOut never lags a keyed count / recount / recalc by the 5-min timer.</summary>
+    private void SyncStockOutsSoon() =>
+        _ = Task.Run(async () => { try { await SyncRemainingToStockOutsAsync(); } catch (Exception ex) { _log.LogDebug(ex, "StockOuts sync (after correction) failed."); } });
 
     /// <summary>
     /// Writes each tracked feeder's live remaining balance back to StockOuts.Quantity, keyed by reel UID
     /// (via <see cref="IReelPartRepository.UpdateReelQtyAsync"/> — the Quantity column only). Skips reels whose
-    /// balance hasn't changed since the last sync. Enabled by config.SyncStockOuts; the local remaining.json
-    /// stays the source of truth, StockOuts is a mirror for the parts-control system. Returns rows written.
+    /// balance hasn't changed since the last sync. ALWAYS ON (2026-09-14): the reel balance is StockOut for the
+    /// loaded reel and PVS keeps it current; the local remaining.json is the line's own copy (fresher by up to one
+    /// timer tick plus any correction not yet written). One pass at a time. Returns rows written.
     /// </summary>
     public async Task<int> SyncRemainingToStockOutsAsync(CancellationToken ct = default)
     {
-        if (!_config.SyncStockOuts) return 0;
-        var items = new List<(string Uid, string Part, int Rem)>();
-        foreach (var ch in _channels.Values)
-            foreach (var f in ch.Inventory.Feeders)
-                if (f.IsTracked && !string.IsNullOrWhiteSpace(f.ReelUid))
-                    items.Add((f.ReelUid!, f.PartNumber, Math.Max(0, f.Remaining)));
-        int written = 0;
-        foreach (var it in items)
+        if (!await _stockOutLock.WaitAsync(0, ct)) return 0;   // a pass is already running
+        try
         {
-            bool skip; lock (_gate) { skip = _lastSynced.TryGetValue(it.Uid, out var prev) && prev == it.Rem; }
-            if (skip) continue;
-            try
+            var items = new List<(string Uid, string Part, int Rem)>();
+            foreach (var ch in _channels.Values)
+                foreach (var f in ch.Inventory.Feeders)
+                    if (f.IsTracked && !string.IsNullOrWhiteSpace(f.ReelUid))
+                        items.Add((f.ReelUid!, f.PartNumber, Math.Max(0, f.Remaining)));
+            int written = 0; string? lastErr = null;
+            foreach (var it in items)
             {
-                int rows = await _repo.UpdateReelQtyAsync(it.Uid, it.Part, it.Rem, ct);
-                if (rows > 0) { lock (_gate) { _lastSynced[it.Uid] = it.Rem; } written++; }
+                bool skip; lock (_gate) { skip = _lastSynced.TryGetValue(it.Uid, out var prev) && prev == it.Rem; }
+                if (skip) continue;
+                try
+                {
+                    int rows = await _repo.UpdateReelQtyAsync(it.Uid, it.Part, it.Rem, ct);
+                    if (rows > 0) { lock (_gate) { _lastSynced[it.Uid] = it.Rem; } written++; }
+                    else lastErr = $"no StockOut row for reel {it.Uid}";
+                }
+                catch (Exception ex) { lastErr = ex.Message; _log.LogWarning(ex, "StockOuts sync failed for reel {Uid}.", it.Uid); }
             }
-            catch (Exception ex) { _log.LogWarning(ex, "StockOuts sync failed for reel {Uid}.", it.Uid); }
+            lock (_gate)
+            {
+                _stockOutLastAttemptAt = DateTime.Now; _stockOutTracked = items.Count; _stockOutLastWritten = written;
+                if (lastErr is null) { _stockOutLastOkAt = DateTime.Now; _stockOutLastError = null; } else _stockOutLastError = lastErr;
+            }
+            if (written > 0) _log.LogInformation("Synced {N} reel balances to StockOuts.", written);
+            return written;
         }
-        if (written > 0) _log.LogInformation("Synced {N} reel balances to StockOuts.", written);
-        return written;
+        finally { _stockOutLock.Release(); }
     }
 
     /// <summary>
@@ -2129,6 +2153,7 @@ public sealed class SessionCoordinator : IDisposable
         if (fs is null) return false;
         ch.Inventory.SetRemaining(feeder, qty);
         _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, feeder, fs.PartNumber, fs.ReelUid ?? "", Math.Max(0, qty), DateTime.Now));
+        SyncStockOutsSoon();
         return true;
     }
 
@@ -2371,6 +2396,7 @@ public sealed class SessionCoordinator : IDisposable
         var tracked = ch.Inventory.Feeders.Where(f => f.IsTracked).ToList();
         foreach (var f in tracked)
             _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
+        SyncStockOutsSoon();
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineCountSync", tracked.Count, 0,
             $"M{machine} boards {before}->{hmiPanels} (delta {delta})", Supervisor: actor, Quantity: hmiPanels,
             Overridden: true, Note: "operator HMI board-count override; feeder draw-down corrected", LotNo: _currentLotNo));
@@ -2495,6 +2521,7 @@ public sealed class SessionCoordinator : IDisposable
             }
         }
         foreach (var e in toPersist) _remaining.Set(e);   // persist recalced balances so they survive a restart
+        if (toPersist.Count > 0) SyncStockOutsSoon();
         try
         {
             var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "lot-usage");
@@ -2580,6 +2607,7 @@ public sealed class SessionCoordinator : IDisposable
                 foreach (var f in ch.Inventory.Feeders.Where(f => f.IsTracked))
                     _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, f.Feeder, f.PartNumber, f.ReelUid ?? "", f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
                 applied = true;
+                SyncStockOutsSoon();
                 Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineTallySync", machine, 0,
                     $"M{machine} boards {before}->{panels} (delta {d}) from machine pickups", Supervisor: "machine (C1Z)",
                     Quantity: panels, Overridden: true,
@@ -2897,7 +2925,6 @@ public sealed class SessionCoordinator : IDisposable
     /// those reels come off still-full and return to standby.</summary>
     private async Task RetireOutgoingReelAsync(Pvs.LineApp.Inventory.FeederReel outgoing, int machine, int feeder, CancellationToken ct)
     {
-        if (!_config.SyncStockOuts) return;
         string lot; lock (_gate) lot = _currentLotNo;
         if (string.IsNullOrWhiteSpace(lot)) return;                        // only "while mid lot running"
         var uid = outgoing.Uid?.Trim(); var part = outgoing.Part?.Trim();
@@ -3118,6 +3145,7 @@ public sealed class SessionCoordinator : IDisposable
             }
             _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(corrected.Machine, corrected.Feeder,
                 corrected.ScannedPart ?? "", corrected.ReelUid ?? "", Math.Max(0, qty), DateTime.Now));
+            SyncStockOutsSoon();
 
             await _records.WriteAsync(new VerificationRecord(
                 DateTime.Now, _config.LineName, "ModelChange", corrected.Machine, corrected.Feeder,
@@ -3210,6 +3238,7 @@ public sealed class SessionCoordinator : IDisposable
                     chNew.Inventory.LoadReel(c.Feeder, c.NewReelUid!, newQty);
                     _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(
                         c.Machine, c.Feeder, c.NewReelPart ?? c.ExpectedPart, c.NewReelUid!, Math.Max(0, newQty), DateTime.Now));
+                    SyncStockOutsSoon();
                 }
                 _change = null;
             }
