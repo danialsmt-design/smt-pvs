@@ -98,6 +98,16 @@ public sealed class AlertConfig
     public int PickupAlertMinPicks { get; set; } = 1000;
     /// <summary>WhatsApp recipients for the pickup-rate alert (comma-separated). Default: Raja Rao + Danish + Rezman.</summary>
     public string PickupAlertRecipients { get; set; } = "60163327003,60122445237,60126816059";
+
+    /// <summary>Attrition report (Danial 2026-09-14): at a genuine parts-out the reel is empty, so PVS's remaining is
+    /// the shortage; shortage ÷ start qty must be under <see cref="AttritionLimitPct"/>. Reels over the limit that ran
+    /// at least <see cref="AttritionMinBoards"/> boards are WhatsApped to the production manager at lot end (one
+    /// message per lot). Short runs are reported on screen but not escalated (a noisy percent).</summary>
+    public bool AttritionAlert { get; set; } = true;
+    public double AttritionLimitPct { get; set; } = 2.0;
+    public int AttritionMinBoards { get; set; } = 20;
+    /// <summary>WhatsApp recipients for the attrition escalation (comma-separated). Default: Raja Rao.</summary>
+    public string AttritionAlertRecipients { get; set; } = "60163327003";
 }
 
 /// <summary>The delivery robot. PVS never talks to the robot itself: it asks the MCS dispatcher on the NAS (the

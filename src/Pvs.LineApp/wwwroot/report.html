@@ -80,6 +80,14 @@
   </div>
 
   <div class="card">
+    <h2>Attrition at parts-out <small id="attrHint">PVS remaining when the reel ran out ÷ reel start qty</small></h2>
+    <table id="attrition"><thead><tr>
+      <th>Time</th><th>Lot</th><th>Machine</th><th>Feeder</th><th>Part</th><th>Reel</th>
+      <th class="n">Start</th><th class="n">Short</th><th class="n">%</th><th class="n">Boards</th><th>Status</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
     <h2>Feeder usage by machine <small>expected placements = boards produced × per-board (BOM)</small></h2>
     <div id="mtabs"></div>
     <div id="machineSections"></div>
@@ -133,6 +141,21 @@ async function load(){
       `<tr><td>${fmtDT(s.start)}</td><td>${s.end?fmtDT(s.end):'<span class="pill down">ongoing</span>'}</td><td class="n">${s.minutes}</td></tr>`);
   }
   $('#dtHint').textContent = 'total ' + r.downtime.totalMinutes + ' min';
+
+  // Attrition at parts-out
+  const ab = $('#attrition tbody'); ab.innerHTML='';
+  const arows = r.attrition?.rows || [];
+  const alim = r.attrition?.limitPct ?? 2;
+  if(!arows.length) ab.innerHTML = `<tr><td colspan="11" class="empty">No reel ran out on this date.</td></tr>`;
+  for(const a of arows){
+    const st = a.over ? (a.escalate ? (a.alerted ? 'OVER · sent to manager' : 'OVER') : 'OVER · short run') : 'OK';
+    ab.insertAdjacentHTML('beforeend',
+      `<tr style="${a.over?'color:#d33;font-weight:700':''}"><td>${fmtDT(a.at)}</td><td>${a.lot||'—'}</td><td>M${a.machine}</td><td>F${a.feeder}</td>
+       <td>${a.part}</td><td>${a.uid}</td><td class="n">${num(a.startQty)}</td><td class="n">${num(a.shortage)}</td>
+       <td class="n">${a.percent}%</td><td class="n">${a.boards}</td><td>${st}</td></tr>`);
+  }
+  const aover = arows.filter(a=>a.over).length;
+  $('#attrHint').textContent = 'limit ' + alim + '% · ' + arows.length + ' reel(s) out' + (aover ? ' · ' + aover + ' over limit' : '');
 
   // Feeder usage by machine
   const machines = r.machines || [];

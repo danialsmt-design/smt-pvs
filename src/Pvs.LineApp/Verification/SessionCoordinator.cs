@@ -58,6 +58,8 @@ public sealed class SessionCoordinator : IDisposable
     private readonly HashSet<string> _calibratedReels = new();             // machine|feeder|uid already sampled
     private DateTime _calibrationSavedAt;
     private static string CalibrationPath => System.IO.Path.Combine(AppContext.BaseDirectory, "calibration.json");
+    private readonly Pvs.Core.Inventory.AttritionLedger _attrition;         // per-reel shortage at parts-out (report + >limit escalation)
+    private static string AttritionPath => System.IO.Path.Combine(AppContext.BaseDirectory, "attrition.json");
 
     private readonly Dictionary<(int machine, int feeder), string> _expected = new();
 
@@ -178,6 +180,7 @@ public sealed class SessionCoordinator : IDisposable
         LoadScanProgress();   // restore an in-progress check so a restart never loses scan progress
         LoadCheckStatus();    // restore the last shift/lot/model-change completion so the monitor GREEN survives a restart
         _calibration = LoadCalibration();   // restore the learned per-part exhaust-drift (shadow accuracy signal)
+        _attrition = LoadAttrition();       // restore the per-reel attrition report (and which lots were already escalated)
 
         foreach (var ch in _channels.Values)
             ch.PartsOutDetected += OnPartsOut;
@@ -2163,6 +2166,82 @@ public sealed class SessionCoordinator : IDisposable
     {
         lock (_gate) { _pending[(e.Machine, e.Feeder)] = e; } // dedup by feeder, keep latest
         RecordExhaustCalibration(e);                          // shadow-learn from the genuine parts-out (read-only)
+        RecordAttrition(e);                                   // the shortage report: PVS remaining at exhaust vs the reel's start qty
+    }
+
+    /// <summary>
+    /// ATTRITION REPORT (Danial 2026-09-14): at a genuine parts-out the reel is EMPTY, so PVS's tracked remaining on
+    /// that reel is the shortage the model never saw. shortage ÷ start qty must stay under the line limit (2 %);
+    /// a reel over the limit that ran a meaningful number of boards is escalated to the production manager at lot
+    /// end. READ-ONLY on the counts: it never changes a reel balance or StockOut.
+    /// </summary>
+    private void RecordAttrition(PartsOutEvent e)
+    {
+        if (!_channels.TryGetValue(e.Machine, out var ch)) return;
+        if (ch.Inventory.ReelUsage(e.Feeder) is not { } u || string.IsNullOrWhiteSpace(u.ReelUid)) return;
+        string lot; lock (_gate) lot = _currentLotNo;
+        var row = _attrition.Record(DateTime.Now, lot, e.Machine, e.Feeder, u.Part, u.ReelUid, u.StartQty, u.BoardsThisReel, u.MountedPerBoard, u.Remaining);
+        if (row is null) return;   // this reel's exhaust was already sampled
+        if (row.Over)
+            _log.LogWarning("ATTRITION M{M} F{F} {Part} reel {Uid}: PVS still showed {Short} of {Start} pcs at parts-out = {Pct}% (limit {Lim}%) after {B} boards{Esc}.",
+                e.Machine, e.Feeder, u.Part, u.ReelUid, row.Shortage, row.StartQty, row.Percent, _attrition.LimitPct, row.BoardsThisReel,
+                row.Escalate ? " — escalates at lot end" : " — short run, reported only");
+        else
+            _log.LogInformation("Attrition M{M} F{F} {Part} reel {Uid}: {Short} of {Start} pcs ({Pct}%) after {B} boards — within limit.",
+                e.Machine, e.Feeder, u.Part, u.ReelUid, row.Shortage, row.StartQty, row.Percent, row.BoardsThisReel);
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, row.Over ? "AttritionOver" : "Attrition", row.Shortage, 0,
+            $"M{e.Machine} F{e.Feeder} {u.Part}", NewReelUid: u.ReelUid,
+            Note: $"parts-out: PVS remaining {row.Shortage} of {row.StartQty} = {row.Percent}% after {row.BoardsThisReel} boards (limit {_attrition.LimitPct}%)", LotNo: lot));
+        SaveAttrition();
+    }
+
+    private Pvs.Core.Inventory.AttritionLedger LoadAttrition()
+    {
+        var a = _config.Alerts;
+        try
+        {
+            var seed = Pvs.Core.Persistence.AtomicFile.Load(AttritionPath,
+                t => System.Text.Json.JsonSerializer.Deserialize<List<Pvs.Core.Inventory.ReelAttrition>>(t));
+            return new Pvs.Core.Inventory.AttritionLedger(a.AttritionLimitPct, a.AttritionMinBoards, seed: seed);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "Attrition load failed — starting fresh."); }
+        return new Pvs.Core.Inventory.AttritionLedger(a.AttritionLimitPct, a.AttritionMinBoards);
+    }
+
+    private void SaveAttrition()
+    {
+        try { Pvs.Core.Persistence.AtomicFile.Write(AttritionPath, System.Text.Json.JsonSerializer.Serialize(_attrition.All())); }
+        catch (Exception ex) { _log.LogDebug(ex, "Attrition save failed."); }
+    }
+
+    /// <summary>Per-reel attrition rows (newest first) — the report endpoint.</summary>
+    public IReadOnlyList<Pvs.Core.Inventory.ReelAttrition> Attrition() => _attrition.All();
+    public IReadOnlyList<Pvs.Core.Inventory.ReelAttrition> AttritionBetween(DateTime from, DateTime to) => _attrition.Between(from, to);
+    public double AttritionLimitPct => _attrition.LimitPct;
+    public int AttritionMinBoards => _attrition.MinBoards;
+
+    /// <summary>Lot end: one WhatsApp to the production manager listing every reel of the lot over the limit (once
+    /// per lot; rows are marked sent and persisted so a restart or a second finalise never re-sends).</summary>
+    private void EscalateAttrition(string lotNo)
+    {
+        var a = _config.Alerts;
+        var rows = _attrition.TakeEscalations(lotNo);
+        if (rows.Count == 0) return;
+        SaveAttrition();
+        if (!a.AttritionAlert) { _log.LogWarning("Lot {Lot}: {N} reel(s) over the attrition limit — alert disabled, not sent.", lotNo, rows.Count); return; }
+        var recipients = (a.AttritionAlertRecipients ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var sender = new Pvs.LineApp.Runtime.WhatsAppSender(a.WhatsAppBridgeUrl, a.WhatsAppRecipient);
+        if (recipients.Length == 0 || !sender.HasBridge) { _log.LogWarning("Lot {Lot}: {N} reel(s) over the attrition limit — no WhatsApp recipient/bridge configured.", lotNo, rows.Count); return; }
+        string msg = Pvs.Core.Inventory.AttritionLedger.ComposeMessage(_config.LineName, lotNo, Model?.Name, rows, _attrition.LimitPct);
+        _log.LogWarning("Lot {Lot}: {N} reel(s) over the attrition limit — WhatsApp to {Rcpt}.", lotNo, rows.Count, string.Join(",", recipients));
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "AttritionEscalated", rows.Count, 0,
+            string.Join(" ", rows.Select(r => $"M{r.Machine}F{r.Feeder}")), Overridden: true,
+            Note: $"{rows.Count} reel(s) over {_attrition.LimitPct}% attrition sent to {string.Join(",", recipients)}", LotNo: lotNo));
+        _ = Task.Run(async () =>
+        {
+            foreach (var r in recipients)
+                if (!await sender.SendToAsync(r, msg)) _log.LogWarning("Attrition WhatsApp to {Rcpt} failed (bridge down?).", r);
+        });
     }
 
     /// <summary>
@@ -2531,6 +2610,7 @@ public sealed class SessionCoordinator : IDisposable
                 System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex) { _log.LogDebug(ex, "Lot-usage report write failed for {Lot}.", outgoingLot); }
+        try { EscalateAttrition(outgoingLot ?? ""); } catch (Exception ex) { _log.LogWarning(ex, "Attrition escalation failed for {Lot}.", outgoingLot); }
         if (recalced.Count == 0)
         {
             _log.LogInformation("Lot {Lot} usage within contract (≤{Tol}% of the bible over {Boards} boards) — no recalc needed.", outgoingLot, tol, lotBoards);

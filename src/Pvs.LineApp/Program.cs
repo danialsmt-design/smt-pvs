@@ -1031,6 +1031,14 @@ app.MapGet("/api/report/daily", async (LineService line, IReelPartRepository rep
         },
         // Reason-tagged stops (under each title) + per-cell parts-exhaust recovery.
         stopCapture = line.StopTracking?.Report(dayStart, dayStart.AddDays(1)),
+        // Attrition: every reel that ran out on this day — PVS remaining at the parts-out vs the reel's start qty.
+        attrition = new
+        {
+            limitPct = line.Coordinator?.AttritionLimitPct ?? 2.0,
+            rows = (line.Coordinator?.AttritionBetween(dayStart, dayStart.AddDays(1)) ?? Array.Empty<Pvs.Core.Inventory.ReelAttrition>())
+                .Select(r => new { at = r.At, lot = r.LotNo, machine = r.Machine, feeder = r.Feeder, part = r.Part, uid = r.ReelUid,
+                    startQty = r.StartQty, boards = r.BoardsThisReel, shortage = r.Shortage, percent = r.Percent, over = r.Over, escalate = r.Escalate, alerted = r.Alerted })
+        },
         machines
     });
 });
@@ -1158,6 +1166,22 @@ app.MapGet("/api/badges/status", async (IReelPartRepository repo) =>
 });
 // Learned exhaust-accuracy (shadow): per part, how far real reel exhaust drifts from PVS's prediction — the
 // tell-tale that the per-board count is off. Positive err/board = PVS under-counts (reel empties early). Read-only.
+// ATTRITION REPORT: per-reel shortage measured at each genuine parts-out (PVS remaining at exhaust ÷ start qty),
+// newest first; ?lot= filters one lot, ?days= limits the window (default 7). Read-only.
+app.MapGet("/api/attrition", (LineService line, string? lot, int? days) =>
+{
+    var c = line.Coordinator;
+    if (c is null) return Results.Ok(new { limitPct = 2.0, minBoards = 20, rows = Array.Empty<object>() });
+    var from = DateTime.Now.AddDays(-Math.Clamp(days ?? 7, 1, 60));
+    var rows = c.Attrition().Where(r => r.At >= from && (string.IsNullOrWhiteSpace(lot) || string.Equals(r.LotNo, lot, StringComparison.OrdinalIgnoreCase)));
+    return Results.Ok(new
+    {
+        limitPct = c.AttritionLimitPct, minBoards = c.AttritionMinBoards, currentLot = c.CurrentLotNo,
+        rows = rows.Select(r => new { at = r.At, lot = r.LotNo, machine = r.Machine, feeder = r.Feeder, part = r.Part, uid = r.ReelUid,
+            startQty = r.StartQty, boards = r.BoardsThisReel, perBoard = r.MountedPerBoard, shortage = r.Shortage, percent = r.Percent,
+            over = r.Over, escalate = r.Escalate, alerted = r.Alerted })
+    });
+});
 app.MapGet("/api/calibration", (LineService line) => Results.Ok(new
 {
     parts = (line.Coordinator?.Calibration() ?? Array.Empty<Pvs.Core.Inventory.PartCalibration>())

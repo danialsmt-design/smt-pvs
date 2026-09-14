@@ -193,6 +193,42 @@ BOARD TALLY CORRECTION
 └─ REVERSE  key the previous count again (same observed boards) → every reel returns exactly
 ```
 
+### Attrition report at parts-out (+ >2 % escalation to the production manager)  🔧draft (built 2026-09-14)
+*Danial 2026-09-14: "the component shortage during parts exhaust compared with PVS creates an attrition report;
+should be less than 2 %; anything more highlight to Mr Raja." C1Z is NOT used for counting (intermittent); its job
+is the high-throw feeder alarm (pickup-rate WhatsApp).*
+
+```
+ATTRITION AT PARTS-OUT
+│
+├─ TRIGGER  a GENUINE parts-out frame for a feeder (machine says the reel is empty)
+│
+├─ GATE  the feeder has a tracked reel with a UID ?  and  this reel's exhaust not sampled before ?
+│     ├─ no  → nothing recorded
+│     └─ yes ↓
+│
+├─ ACTION  shortage = PVS remaining on that reel at this instant (≥ 0)
+│          percent  = shortage ÷ reel start qty × 100
+│          over     = percent > limit (2 %)       escalate = over AND boards this reel ≥ 20
+│          row → attrition.json (atomic, 60 days) · audit Attrition / AttritionOver · red row on verify + daily report
+│
+├─ LOT END (RecordLotUsageAtFinalize)  rows of the lot with escalate AND not yet sent
+│          → ONE WhatsApp to the production manager (Raja Rao) listing each reel; rows marked sent + persisted
+│
+├─ INVARIANTS
+│     • READ-ONLY on counts: never changes a reel balance, StockOut, or the lot count
+│     • one sample per reel (machine|feeder|uid); one message per lot, never re-sent after a restart or 2nd finalise
+│     • a short run over the limit is SHOWN but not escalated (noisy percent)
+│     • exactly 2 % is within limit (strict >)
+│
+├─ MUST NOT
+│     ✗ use C1Z pickups for the shortage     ✗ alert mid-lot (the lot's list goes as one message)     ✗ block the serial thread
+│
+├─ OUTPUT  /api/attrition · report/daily.attrition · verify "Attrition this lot" card · WhatsApp (fire-and-forget, logged if the bridge fails)
+│
+└─ REVERSE  delete attrition.json (report only; nothing else was written)
+```
+
 ### Feeder decrement per board  ▫ to write
 ### Parts-out retire (consume)  ▫ to write
 ### StockOut sync  ▫ to write
