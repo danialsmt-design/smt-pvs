@@ -459,15 +459,6 @@
       <div class="hd" id="exhMiniHd">⏱ Next to run out / နောက်ကုန်မည့် — Top 5</div>
       <div id="exhMiniRows"></div>
     </div>
-    <!-- Attrition: reels that ran out this lot — what PVS still showed at the parts-out vs the reel's start qty.
-         Red = over the line limit (escalated to the production manager at lot end when the run was long enough). -->
-    <div class="card compact" id="attrCard" style="display:none">
-      <div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span>📉 Attrition this lot <span id="attrLim" style="color:var(--mut);font-weight:600"></span></span>
-        <span id="attrSum" style="font-size:11px;color:var(--mut2)"></span>
-      </div>
-      <div id="attrRows" style="font-size:12.5px"></div>
-    </div>
     <!-- MCS production plan for this line (read-only mirror of the NAS scheduler): the day's lots in run order. -->
     <div class="card compact" id="planCard" style="display:none">
       <div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -683,29 +674,6 @@ async function refreshPlan(){
   $('planFoot').textContent = (items.length? items.length+' lot(s) this day · ' : '') + (gen? 'MCS plan '+gen.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '') + (p.error && items.length? ' · last read failed: '+p.error : '');
 }
 setInterval(refreshPlan, 60000); refreshPlan();
-
-// ---- Attrition this lot (read-only; /api/attrition) ----
-async function refreshAttrition(){
-  let a; try{ a = await (await fetch('/api/attrition?days=7')).json(); }catch(e){ return; }
-  const card = $('attrCard'); if(!card) return;
-  const lot = a.currentLot || '';
-  const rows = (a.rows||[]).filter(r => lot && r.lot === lot);
-  if(!rows.length){ card.style.display='none'; return; }
-  card.style.display='';
-  $('attrLim').textContent = '· limit '+a.limitPct+'%';
-  const over = rows.filter(r=>r.over).length;
-  $('attrSum').textContent = rows.length+' reel(s) out'+(over?' · '+over+' over limit':' · all within limit');
-  $('attrRows').innerHTML = rows.slice().sort((x,y)=>y.percent-x.percent).map(r=>{
-    const col = r.over?'var(--red)':'var(--ok)';
-    const tag = r.over ? (r.escalate ? (r.alerted?'SENT':'OVER') : 'SHORT RUN') : 'OK';
-    return '<div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--ln);'+(r.over?'color:var(--red);font-weight:700':'')+'">'
-      + '<span>M'+r.machine+' F'+r.feeder+' <b>'+r.part+'</b> <span style="color:var(--mut);font-weight:400">'+r.uid+'</span></span>'
-      + '<span style="white-space:nowrap">'+Number(r.shortage).toLocaleString()+' / '+Number(r.startQty).toLocaleString()+' · '+r.percent+'% · '+r.boards+' bd</span>'
-      + '<span style="font-weight:800;font-size:10.5px;color:'+col+';min-width:64px;text-align:right">'+tag+'</span>'
-      + '</div>';
-  }).join('');
-}
-setInterval(refreshAttrition, 15000); refreshAttrition();
 
 // ---- Board input tracking (first-side packs + second-side magazines) ----
 let biState=null;

@@ -157,6 +157,17 @@
     <div class="empty" id="noEvents">No parts-out yet this session.</div>
   </div>
 
+  <!-- Attrition at parts-out: what PVS still showed on the reel when the machine reported it empty, vs the reel's
+       start qty. Red = over the line limit; escalated to the production manager at lot end when the run was long enough. -->
+  <div class="card" id="attrCard">
+    <h2>📉 Attrition at parts-out <small id="attrHint" style="color:var(--mut);font-weight:400;font-size:13px;text-transform:none;letter-spacing:0"></small></h2>
+    <table>
+      <thead><tr><th>Time</th><th>Lot</th><th>Machine</th><th>Feeder</th><th>Part</th><th>Reel</th><th>Start</th><th>Short</th><th>%</th><th>Boards</th><th>Status</th></tr></thead>
+      <tbody id="attrRows"></tbody>
+    </table>
+    <div class="empty" id="attrEmpty">No reel has run out in the last 7 days.</div>
+  </div>
+
   <div class="card">
     <h2>What runs out next</h2>
     <table>
@@ -416,6 +427,26 @@ async function syncMachineCount(machine){
   }catch(e){ msg.style.color='var(--red)'; msg.textContent='Failed: '+e; }
 }
 loadBoardSync(); setInterval(loadBoardSync, 5000);
+
+// ---- Attrition at parts-out (read-only; /api/attrition, last 7 days, current lot first) ----
+async function loadAttrition(){
+  let a; try{ a = await (await fetch('/api/attrition?days=7')).json(); }catch(e){ return; }
+  const tb = document.getElementById('attrRows'), empty = document.getElementById('attrEmpty'), hint = document.getElementById('attrHint');
+  if(!tb) return;
+  const rows = (a.rows||[]).slice().sort((x,y)=> (y.lot===a.currentLot) - (x.lot===a.currentLot) || new Date(y.at) - new Date(x.at));
+  const over = rows.filter(r=>r.over).length;
+  hint.textContent = 'limit ' + a.limitPct + '% · ' + rows.length + ' reel(s) out in 7 days' + (over ? ' · ' + over + ' over limit' : '');
+  empty.style.display = rows.length ? 'none' : '';
+  tb.innerHTML = rows.map(r=>{
+    const t = new Date(r.at); const hm = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + ' ' + t.toLocaleDateString(undefined,{day:'2-digit',month:'short'});
+    const st = r.over ? (r.escalate ? (r.alerted ? 'OVER · sent to manager' : 'OVER') : 'OVER · short run') : 'OK';
+    const cur = r.lot===a.currentLot && a.currentLot ? ' <span style="color:var(--mut)">(now)</span>' : '';
+    return '<tr style="'+(r.over?'color:var(--red);font-weight:700':'')+'"><td>'+hm+'</td><td>'+(r.lot||'—')+cur+'</td><td>M'+r.machine+'</td><td>F'+r.feeder+'</td>'
+      + '<td>'+r.part+'</td><td>'+r.uid+'</td><td>'+Number(r.startQty).toLocaleString()+'</td><td>'+Number(r.shortage).toLocaleString()+'</td>'
+      + '<td>'+r.percent+'%</td><td>'+r.boards+'</td><td>'+st+'</td></tr>';
+  }).join('');
+}
+loadAttrition(); setInterval(loadAttrition, 15000);
 
 // Standby check — scan spare reels physically on the rack; confirmed vs pending vs unexpected. (Moved here from
 // the operator Verify screen.) Click the box, scan each spare, read the summary.
