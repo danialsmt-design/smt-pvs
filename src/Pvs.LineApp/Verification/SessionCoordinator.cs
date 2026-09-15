@@ -2165,8 +2165,10 @@ public sealed class SessionCoordinator : IDisposable
     private void OnPartsOut(PartsOutEvent e)
     {
         lock (_gate) { _pending[(e.Machine, e.Feeder)] = e; } // dedup by feeder, keep latest
-        RecordExhaustCalibration(e);                          // shadow-learn from the genuine parts-out (read-only)
-        RecordAttrition(e);                                   // the shortage report: PVS remaining at exhaust vs the reel's start qty
+        // NOT a consumed-reel sample by itself: at a lot start the machine sends E03 for a feeder that is not yet
+        // threaded/seated while a FULL reel is mapped (2026-09-15: every line showed 95-100 % "shortage" at 0-10
+        // boards). The exhaust is confirmed only when the operator scans a DIFFERENT reel onto that feeder —
+        // the parts-change commit in MaybeFinalizeAsync samples the OUTGOING reel there.
     }
 
     /// <summary>
@@ -2175,23 +2177,21 @@ public sealed class SessionCoordinator : IDisposable
     /// a reel over the limit that ran a meaningful number of boards is escalated to the production manager at lot
     /// end. READ-ONLY on the counts: it never changes a reel balance or StockOut.
     /// </summary>
-    private void RecordAttrition(PartsOutEvent e)
+    private void RecordAttrition(ExhaustSample x)
     {
-        if (!_channels.TryGetValue(e.Machine, out var ch)) return;
-        if (ch.Inventory.ReelUsage(e.Feeder) is not { } u || string.IsNullOrWhiteSpace(u.ReelUid)) return;
         string lot; lock (_gate) lot = _currentLotNo;
-        var row = _attrition.Record(DateTime.Now, lot, e.Machine, e.Feeder, u.Part, u.ReelUid, u.StartQty, u.BoardsThisReel, u.MountedPerBoard, u.Remaining);
+        var row = _attrition.Record(DateTime.Now, lot, x.Machine, x.Feeder, x.Part, x.ReelUid, x.StartQty, x.BoardsThisReel, x.MountedPerBoard, x.Remaining);
         if (row is null) return;   // this reel's exhaust was already sampled
         if (row.Over)
-            _log.LogWarning("ATTRITION M{M} F{F} {Part} reel {Uid}: PVS still showed {Short} of {Start} pcs at parts-out = {Pct}% (limit {Lim}%) after {B} boards{Esc}.",
-                e.Machine, e.Feeder, u.Part, u.ReelUid, row.Shortage, row.StartQty, row.Percent, _attrition.LimitPct, row.BoardsThisReel,
+            _log.LogWarning("ATTRITION M{M} F{F} {Part} reel {Uid}: PVS still showed {Short} of {Start} pcs at the confirmed exhaust = {Pct}% (limit {Lim}%) after {B} boards{Esc}.",
+                x.Machine, x.Feeder, x.Part, x.ReelUid, row.Shortage, row.StartQty, row.Percent, _attrition.LimitPct, row.BoardsThisReel,
                 row.Escalate ? " — escalates at lot end" : " — short run, reported only");
         else
             _log.LogInformation("Attrition M{M} F{F} {Part} reel {Uid}: {Short} of {Start} pcs ({Pct}%) after {B} boards — within limit.",
-                e.Machine, e.Feeder, u.Part, u.ReelUid, row.Shortage, row.StartQty, row.Percent, row.BoardsThisReel);
+                x.Machine, x.Feeder, x.Part, x.ReelUid, row.Shortage, row.StartQty, row.Percent, row.BoardsThisReel);
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, row.Over ? "AttritionOver" : "Attrition", row.Shortage, 0,
-            $"M{e.Machine} F{e.Feeder} {u.Part}", NewReelUid: u.ReelUid,
-            Note: $"parts-out: PVS remaining {row.Shortage} of {row.StartQty} = {row.Percent}% after {row.BoardsThisReel} boards (limit {_attrition.LimitPct}%)", LotNo: lot));
+            $"M{x.Machine} F{x.Feeder} {x.Part}", NewReelUid: x.ReelUid,
+            Note: $"confirmed exhaust (parts-out + new reel scanned): PVS remaining {row.Shortage} of {row.StartQty} = {row.Percent}% after {row.BoardsThisReel} boards (limit {_attrition.LimitPct}%)", LotNo: lot));
         SaveAttrition();
     }
 
@@ -2250,18 +2250,19 @@ public sealed class SessionCoordinator : IDisposable
     /// it to the per-part calibration so future exhaust predictions improve. ONE sample per reel (dedup by UID).
     /// READ-ONLY — never rewrites a reel balance (never lose a reel's count); it only learns a correction factor.
     /// </summary>
-    private void RecordExhaustCalibration(PartsOutEvent e)
+    /// <summary>The outgoing reel's usage as it stood when the operator confirmed its exhaust by scanning a new reel.</summary>
+    private readonly record struct ExhaustSample(int Machine, int Feeder, string Part, string ReelUid, int StartQty, int BoardsThisReel, int MountedPerBoard, int Remaining);
+
+    private void RecordExhaustCalibration(ExhaustSample x)
     {
-        if (!_channels.TryGetValue(e.Machine, out var ch)) return;
-        if (ch.Inventory.ReelUsage(e.Feeder) is not { } u || string.IsNullOrWhiteSpace(u.ReelUid)) return;
-        string key = $"{e.Machine}|{e.Feeder}|{u.ReelUid}";
+        string key = $"{x.Machine}|{x.Feeder}|{x.ReelUid}";
         lock (_gate) { if (!_calibratedReels.Add(key)) return; }   // already sampled this reel's exhaust
-        var cal = _calibration.Record(u.Part, u.BoardsThisReel, u.Remaining, u.MountedPerBoard, DateTime.Now);
+        var cal = _calibration.Record(x.Part, x.BoardsThisReel, x.Remaining, x.MountedPerBoard, DateTime.Now);
         if (cal is null) return;   // too few boards to be meaningful
-        _log.LogInformation("Exhaust-calib M{M} F{F} {Part}: reel ran {B} boards, PVS still showed {R} pcs at parts-out → " +
+        _log.LogInformation("Exhaust-calib M{M} F{F} {Part}: reel ran {B} boards, PVS still showed {R} pcs at the confirmed exhaust → " +
             "err {E:0.00}/board (drift {D:+0.0;-0.0}%, {N} samples).",
-            e.Machine, e.Feeder, u.Part, u.BoardsThisReel, u.Remaining, cal.LastErrorPerBoard,
-            cal.DriftPercent(u.MountedPerBoard), cal.Samples);
+            x.Machine, x.Feeder, x.Part, x.BoardsThisReel, x.Remaining, cal.LastErrorPerBoard,
+            cal.DriftPercent(x.MountedPerBoard), cal.Samples);
         SaveCalibration();
     }
 
@@ -3286,11 +3287,22 @@ public sealed class SessionCoordinator : IDisposable
         bool rebaseline = false;
         bool checkDone = false;
         Pvs.LineApp.Inventory.FeederReel? retiring = null;
+        ExhaustSample? exhausted = null;
         lock (_gate)
         {
             if (_change is { State: ChangeState.Complete or ChangeState.Skipped } c)
             {
                 bool completed = c.State == ChangeState.Complete;
+                // CONFIRMED EXHAUST (Danial 2026-09-15: "parts-out E03 are correct only if the operator scanned the
+                // old reel and the new reel ID, otherwise it's a false call"): the machine said parts-out, the operator
+                // scanned the OLD reel (= the reel PVS tracks) and a DIFFERENT new reel. Sample the outgoing reel now,
+                // before the new reel is anchored (attrition report + shadow calibration). Same reel / skip = no sample.
+                if (completed && c.FromPartsOut && !string.IsNullOrWhiteSpace(c.NewReelUid) && !string.IsNullOrWhiteSpace(c.OldReelUid)
+                    && _channels.TryGetValue(c.Machine, out var chOld)
+                    && chOld.Inventory.ReelUsage(c.Feeder) is { } u && !string.IsNullOrWhiteSpace(u.ReelUid)
+                    && string.Equals(u.ReelUid.Trim(), c.OldReelUid.Trim(), StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(u.ReelUid.Trim(), c.NewReelUid.Trim(), StringComparison.OrdinalIgnoreCase))
+                    exhausted = new ExhaustSample(c.Machine, c.Feeder, u.Part, u.ReelUid, u.StartQty, u.BoardsThisReel, u.MountedPerBoard, u.Remaining);
                 // COMMIT the swap only now that it is complete: capture the OUTGOING reel (for auto-retire), then
                 // remember the new reel on the feeder. A skipped/cancelled change ("false alarm") commits nothing —
                 // the old reel stays mapped and is NOT retired. (Audit finding H5.)
@@ -3356,6 +3368,11 @@ public sealed class SessionCoordinator : IDisposable
         }
         if (checkDone) SaveCheckStatus();   // persist the completion so the monitor's GREEN survives an app restart
         if (rec is not null) await _records.WriteAsync(rec, ct);
+        if (exhausted is { } xs)
+        {
+            try { RecordExhaustCalibration(xs); RecordAttrition(xs); }
+            catch (Exception exn) { _log.LogWarning(exn, "Exhaust sample failed for M{M} F{F}.", xs.Machine, xs.Feeder); }
+        }
         if (retiring is not null) await RetireOutgoingReelAsync(retiring, retiring.Machine, retiring.Feeder, ct);
         if (rebaseline) { try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory rebaseline after check failed."); } }
     }

@@ -201,9 +201,12 @@ is the high-throw feeder alarm (pickup-rate WhatsApp).*
 ```
 ATTRITION AT PARTS-OUT
 │
-├─ TRIGGER  a GENUINE parts-out frame for a feeder (machine says the reel is empty)
+├─ TRIGGER  a parts-out (E03) change COMPLETED with a DIFFERENT reel scanned onto the feeder (confirmed exhaust)
+│          (an E03 alone is NOT a sample: at a lot start the machine sends E03 for an unthreaded feeder on a full reel
+│           — 2026-09-15 every line read 95-100 % at 0-10 boards; one false WhatsApp went to Raja Rao from L2)
 │
-├─ GATE  the feeder has a tracked reel with a UID ?  and  this reel's exhaust not sampled before ?
+├─ GATE  operator scanned the OLD reel = the reel PVS tracks ?  and  a DIFFERENT new reel ?  and  not sampled before ?
+│        (Danial: "E03 is correct only if the operator scanned old reel + new reel ID, otherwise false call")
 │     ├─ no  → nothing recorded
 │     └─ yes ↓
 │
@@ -226,7 +229,7 @@ ATTRITION AT PARTS-OUT
 │
 ├─ OUTPUT  /api/attrition · report/daily.attrition · verify "Attrition this lot" card · WhatsApp (fire-and-forget, logged if the bridge fails)
 │
-└─ REVERSE  delete attrition.json (report only; nothing else was written)
+└─ REVERSE  delete attrition.json + calibration.json (report/shadow only; nothing else was written)
 ```
 
 ### Feeder decrement per board  ▫ to write
