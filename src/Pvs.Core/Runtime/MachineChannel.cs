@@ -90,7 +90,13 @@ public sealed class MachineChannel
     /// (The reply is auto-acked with A2 like any D message, which is the C3P termination the manual requires.)
     /// SKIPPED while a report is collecting — a C3P mid-report kills the D0 dump.
     /// </summary>
-    public void RequestProgram() { if (!HousekeepingHeld(DateTime.Now)) _send(SonyFrame.Build("C3P")); }
+    /// Returns true when the C3P was actually SENT, false when it was held back (a report read owns the line).
+    public bool RequestProgram()
+    {
+        if (HousekeepingHeld(DateTime.Now)) return false;
+        _send(SonyFrame.Build("C3P"));
+        return true;
+    }
 
     /// <summary>The machine's own "Number of Completed PWBs" (the <c>PC</c> field of its C1M Production Report) —
     /// its authoritative board counter, which keeps counting even while PVS is off. Null until first read.</summary>

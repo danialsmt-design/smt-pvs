@@ -98,11 +98,7 @@ app.UseStaticFiles(new StaticFileOptions
 
 // Line + machine status.
 // Leading model token of a program name, e.g. "L307 - B SIDE _Cell4.PW4" -> "L307".
-static string ModelOfProgram(string? p)
-{
-    var m = System.Text.RegularExpressions.Regex.Match(p ?? "", @"^\s*([A-Za-z0-9]+)");
-    return m.Success ? m.Groups[1].Value.ToUpperInvariant() : "";
-}
+static string ModelOfProgram(string? p) => Pvs.Core.Runtime.ProgramNames.ModelOf(p);
 // The C1M/C1Z data name is the program name WITHOUT the .PWx file extension (Danial, floor-verified).
 static string? MachineReportName(string? program)
 {
@@ -154,7 +150,7 @@ app.MapGet("/api/status", (LineService line) =>
             kind = "machines-disagree",
             majority,
             odd,
-            message = $"⚠ PROGRAM MISMATCH — {string.Join(", ", odd)} vs {majority} on the rest. A machine's program changed mid-lot. End or change the lot, or fix the program."
+            message = $"⚠ PROGRAM MISMATCH — {string.Join(", ", odd)} vs {majority} on the rest. A machine's program changed mid-lot. End or change the lot, or fix the program. (PVS is re-asking the machines to confirm.)"
         };
     }
 

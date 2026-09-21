@@ -265,6 +265,30 @@ public sealed class CounterReconcilerService : IDisposable
             l.Channel.SupplyReportRead += raw => { try { TallySyncFromReport(mno, raw); } catch (Exception ex) { _log.LogDebug(ex, "machine-tally sync failed."); } };
         }
 
+        // STALE PROGRAM NAME cue: the C1Z is asked for the CACHED program name. When the machine answers with no
+        // pickups at all for it, the machine may be running a DIFFERENT program (L1 M4 2026-09-21: an hour of
+        // all-zero reports for "L313…" while the HMI showed L307). Re-ask the program name a moment after the report
+        // releases the line. Throttled in the coordinator; harmless on a genuinely fresh program (same name returns).
+        foreach (var l in _line.Listeners)
+        {
+            int mno = l.Channel.Machine;
+            l.Channel.SupplyReportRead += raw =>
+            {
+                try
+                {
+                    var rep = Pvs.Core.Serial.SonySupplyReport.Parse(raw ?? "");
+                    bool allZero = rep.Feeders is null || rep.Feeders.Count == 0 || rep.Feeders.All(f => f.Attempted == 0);
+                    if (!allZero) return;
+                    _ = Task.Run(async () =>
+                    {
+                        try { await Task.Delay(TimeSpan.FromSeconds(4)); _line.Coordinator?.RecheckProgram(mno, "all-zero pickup report for the cached program name"); }
+                        catch { /* best effort */ }
+                    });
+                }
+                catch (Exception ex) { _log.LogDebug(ex, "stale-program cue failed."); }
+            };
+        }
+
         // A serial blind spot (transaction-ID gap) means PVS's live count may now be short on that machine, so
         // read the machine's OWN counter (C1M) right away instead of waiting for the next heartbeat. Debounced:
         // a drop can raise a burst of gaps, and a read takes ~45s, so at most one gap-triggered pass per minute.

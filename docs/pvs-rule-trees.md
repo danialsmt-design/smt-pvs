@@ -235,7 +235,37 @@ ATTRITION AT PARTS-OUT
 ### Feeder decrement per board  ▫ to write
 ### Parts-out retire (consume)  ▫ to write
 ### StockOut sync  ▫ to write
-### Program-mismatch alarm  ▫ to write
+### Program-mismatch alarm (+ re-ask before believing it)  🔧draft (built 2026-09-21)
+*PVS caches each machine's program name (C3P) and normally never re-asks. The cache can go stale: L1 M4 2026-09-21
+flashed "M4:L313 vs L307" while its HMI showed L307.*
+
+```
+PROGRAM-MISMATCH ALARM
+│
+├─ TRIGGER  the cached program names of the ONLINE, NON-SKIPPED machines give more than one model
+│           · cue 2: a C1Z pickup report for the cached name comes back ALL ZERO
+│
+├─ ACTION  alarm shows at once (banner + health down)  AND  PVS re-asks the program name (C3P):
+│            mismatch  → every machine in the comparison (the stale name can be on either side)
+│            zero C1Z  → that machine, 4 s after the report releases the line
+│          throttle per machine: 60 s while stopped · 5 min while in AUTO (A4E00 pollutes report reads)
+│          a C3P held back by a report read is NOT counted — the next tick asks again
+│
+├─ CONFIRM  the fresh names agree → alarm clears by itself · still disagree → the alarm is REAL
+│
+├─ INVARIANTS
+│     • read-only: never changes the selected model, the lot, a count or a feeder list
+│     • a skipped or off-line machine neither raises nor joins a re-check
+│     • no periodic C3P while the names agree (the serial stays quiet for report reads)
+│
+├─ MUST NOT
+│     ✗ suppress or delay the alarm while re-asking     ✗ send C3P while a report is collecting
+│
+├─ OUTPUT  log "Program re-check M{n}…" · /api/status programWarn · supervisor can force it: POST /api/programs/query
+│
+└─ REVERSE  nothing to reverse (a read)
+```
+
 ### Exhaust forecast  ▫ to write
 ### Downtime capture (R1-fed, auto-record + operator comment)  🔧draft
 *Supersedes the 2026-08-18 operator-tap-only rule: the machine's R1 stream now auto-records downtime; the operator reason becomes a COMMENT on the auto-captured stop.*

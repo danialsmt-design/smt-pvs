@@ -243,8 +243,36 @@ public sealed class SessionCoordinator : IDisposable
     /// (real-time, exact); falls back to the production system's current lot when no machine answers.
     /// Skips while a check is in progress, and won't clobber a manual override (only switches on a real change).
     /// </summary>
+    private readonly Pvs.Core.Runtime.ProgramRecheck _programRecheck = new();
+
+    /// <summary>
+    /// Re-ask ONE machine which program is loaded (C3P), throttled (60 s stopped / 5 min in AUTO). The cached name
+    /// can be stale — L1 M4 2026-09-21 flashed "L313 vs L307" while its HMI showed L307 — so a mismatch, or an
+    /// all-zero pickup report for the cached name, is a cue to ask again. Read-only; never touches model/lot/counts.
+    /// </summary>
+    public bool RecheckProgram(int machine, string reason)
+    {
+        if (!_channels.TryGetValue(machine, out var ch) || !ch.IsOnline || IsMachineSkipped(machine)) return false;
+        var now = DateTime.Now;
+        if (!_programRecheck.Due(machine, now, ch.Condition.IsRunning)) return false;
+        if (!ch.RequestProgram()) return false;        // a report read owns the line — the next tick tries again
+        _programRecheck.MarkAsked(machine, now);
+        _log.LogInformation("Program re-check M{M}: cached '{Name}' re-asked (C3P) — {Reason}.", machine, ch.ProgramName, reason);
+        return true;
+    }
+
+    /// <summary>While the cached program names disagree on the model, re-ask every machine in the comparison
+    /// (the stale name can be on either side). Runs on the 3-min model tick and right after a lot set.</summary>
+    private void RecheckDisagreeingPrograms()
+    {
+        var set = Pvs.Core.Runtime.ProgramRecheck.Disagreeing(
+            _channels.Values.Select(ch => (ch.Machine, ch.ProgramName, ch.IsOnline, IsMachineSkipped(ch.Machine))));
+        foreach (var m in set) RecheckProgram(m, "machines disagree on the loaded model");
+    }
+
     public async Task AutoDetectModelAsync(CancellationToken ct = default)
     {
+        try { RecheckDisagreeingPrograms(); } catch (Exception ex) { _log.LogDebug(ex, "Program re-check failed."); }
         if (NonCanon) return;   // parked on a non-Canon model — never auto-pin or verify a Canon model
         try
         {
