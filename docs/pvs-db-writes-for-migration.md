@@ -7,11 +7,10 @@ truth for the SQL is `src/Pvs.Data/SqlReelPartRepository.cs`; nothing else in PV
 
 | Item | Value today | Where it lives |
 |---|---|---|
-| Instance | `DESKTOP-TECHNIC\SQLEXPRESS` on the Parts Control PC, TCP 1433 | — |
+| Instance | **LIVE STATE 2026-09-22 (read from each box): all 5 lines already point at the NAS** — `192.168.0.169,1433` (NAS LAN) with `fallbackServer` `100.125.22.119,1433` (NAS Tailscale). L1 L2 L4 L5 connected on the LAN address, L3 (Wi-Fi only) on the Tailscale fallback. The old Parts Control PC instance `DESKTOP-TECHNIC\SQLEXPRESS` (`192.168.0.134` / Tailscale `100.91.120.113`) is no longer the PVS target. | — |
 | Database | `ReelPart-New` | `central.database` |
-| Server, L1 L2 L3 | `100.91.120.113,1433` (Tailscale address of the Parts PC) | `C:\PvsLineApp\line.config.json` → `central.server` |
-| Server, L4 L5 | `192.168.0.134,1433` (LAN) | same |
-| Fail-over server | `central.fallbackServer` — a second address for the SAME instance; the repo tries the preferred one, falls back on a connect failure and sticks to whichever answered. The repo templates in `deploy/` do not carry the key; check each box's live config. | same |
+| Server | `192.168.0.169,1433` on every line (the repo templates in `deploy/line*.config.json` still say `100.91.120.113` / `192.168.0.134` — STALE, do not redeploy them over a box config) | `C:\PvsLineApp\line.config.json` → `central.server` |
+| Fail-over server | `central.fallbackServer` = `100.125.22.119,1433` on every line — the same NAS instance over Tailscale; the repo tries the preferred one, falls back on a connect failure and sticks to whichever answered. | same |
 | Login | SQL auth, `pvs_ro` (name is misleading — see §2) | `central.userId` |
 | Password | NOT in the config: `C:\PvsLineApp\db-password.txt` (read at start-up when `central.password` is empty) | line PC |
 | Connection string | `Server=<s>;Database=ReelPart-New;User ID=pvs_ro;Password=…;TrustServerCertificate=True;Connect Timeout=8;` | `LineConfig.CentralConfig.ConnectionStringFor` |
@@ -145,6 +144,8 @@ per UID and PVS always takes the highest `ID`.
 | nas-daiya, MCS dispatcher, Floor Ai | read only |
 
 ## 6. Cutover checklist for PVS
+
+> **Status 2026-09-22:** steps 1–5 are already DONE for the five line apps (all boxes on `192.168.0.169`, fallback `100.125.22.119`; today's 88 L1 production rows were written to and read back from the NAS). Still to confirm: step 2 (the hourly `.134` → NAS mirror must be OFF), step 4 (old instance read-only), step 7 (MCS pages, Ashish's clear page, PC3 app). L5 showed recently closed sockets to `192.168.0.134:1433` with no owning process — most likely the netguard reachability probe, not a data writer; verify and retire that probe.
 
 1. On the new server: restore `ReelPart-New`; run `deploy/ConsumedReels.sql`; create login `pvs_ro`
    (SQL auth) as `db_datareader` + the four grants in §2; check identity seeds on `DailyProductionCount`,
