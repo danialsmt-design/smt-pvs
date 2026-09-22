@@ -165,7 +165,21 @@ per UID and PVS always takes the highest `ID`.
    ```
 7. Repoint the MCS Ai pages, Ashish's clear page and the PC3 app in the same window (§5).
 
-## 7. Where to look in the code
+## 7. Writes PVS makes that are NOT on the Parts DB (unchanged by the migration)
+
+| Target | What | Code |
+|---|---|---|
+| MCS dispatcher on the NAS (`robot.dispatcherUrl`, `http://192.168.0.169:8090`) | `POST /api/requests` (parts request for the store, 45 min before a forecast run-out) and `POST /api/requests/{id}/close`. The MCS app owns the `PartsRequests` / `PartsRequestReels` tables in its own catalog; PVS never writes them directly. | `PartsRequestService` |
+| MCS dispatcher | `POST /api/robot/call`, `POST /api/robot/done` (the 🤖 button only proxies; the dispatcher is the single writer to the robot) | `RobotCaller` |
+| gms-wabridge Pi (`alerts.whatsAppBridgeUrl`, `http://100.90.248.92:8080`) | `POST /api/send` — DB-down alert, pickup-rate alert, attrition escalation | `WhatsAppSender` |
+| e-mail relay | daily report mail (if configured) | `EmailSender` |
+| MCS schedule (read) | `GET <dispatcherUrl>/api/schedule` every 5 min for the Plan card | `PlanFeedService` |
+
+Completeness check (2026-09-22): `grep SqlClient` over `src/` hits only `Pvs.Data/SqlReelPartRepository*.cs`; the
+`BadgeCache` and `Shortage` partials contain no INSERT/UPDATE/MERGE/DELETE. `NullReelPartRepository` is the
+no-DB stub. Nothing in `deploy/`, `WATCHDOG/` or `nas-daiya/` writes to the Parts DB.
+
+## 8. Where to look in the code
 
 `src/Pvs.Data/SqlReelPartRepository.cs` (all SQL) · `src/Pvs.Core/Config/LineConfig.cs` (`CentralConfig`)
 · `src/Pvs.LineApp/Program.cs` lines ~25–35 (password file) · `src/Pvs.LineApp/Verification/SessionCoordinator.cs`
