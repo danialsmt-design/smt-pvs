@@ -245,12 +245,15 @@ app.MapGet("/api/health", (LineService line) =>
         bool skipped = co?.IsMachineSkipped(l.Channel.Machine) ?? false;
         bool manual = string.IsNullOrWhiteSpace(l.Port);
         double? age = rx.At == default ? (double?)null : (now - rx.At).TotalSeconds;
+        bool silent = co?.SilentMachines.ContainsKey(l.Channel.Machine) ?? false;
         string s = manual || skipped ? "na"
             : !l.IsOpen ? "down"
             : !l.Channel.IsOnline ? "down"
+            : silent ? "warn"
             : (age is double a && a > 600) ? "warn"
             : "ok";
-        return new { machine = l.Channel.Machine, state = s, port = l.Port };
+        return new { machine = l.Channel.Machine, state = s, port = l.Port,
+                     silent = silent ? (object)new { gapPanels = co!.SilentMachines[l.Channel.Machine].GapPanels, since = co.SilentMachines[l.Channel.Machine].Since } : null };
     }).ToList();
     string serial = serialM.Any(m => m.state == "down") ? "down" : serialM.Any(m => m.state == "warn") ? "warn" : "ok";
 
@@ -1177,6 +1180,12 @@ app.MapGet("/api/attrition", (LineService line, string? lot, int? days) =>
             startQty = r.StartQty, boards = r.BoardsThisReel, perBoard = r.MountedPerBoard, shortage = r.Shortage, percent = r.Percent,
             over = r.Over, escalate = r.Escalate, alerted = r.Alerted })
     });
+});
+// BALANCE RECONCILE on demand: re-derive every tracked reel from load qty + line clock (+ learned rate) now.
+app.MapPost("/api/inventory/reconcile", (LineService line) =>
+{
+    int n = line.Coordinator?.ReconcileBalances("manual") ?? 0;
+    return Results.Ok(new { adjusted = n, message = n == 0 ? "all balances within tolerance" : $"{n} reel balance(s) adjusted" });
 });
 app.MapGet("/api/calibration", (LineService line) => Results.Ok(new
 {

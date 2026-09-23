@@ -25,6 +25,11 @@ public sealed class FeederState
     /// the machine for; negative when a correction handed boards back). Stored so a correction and its reversal
     /// cancel exactly, and a later recount / re-anchor starts clean.</summary>
     public int CorrectionBoards { get; internal set; }
+    /// <summary>Quantity confirmed when this reel was LOADED (or physically recounted) — the reconcile base. Unlike
+    /// StartQty it is never moved by a re-baseline.</summary>
+    public int LoadQty { get; internal set; }
+    /// <summary>The LINE board clock (panels the line had completed) at that load/recount. 0 = not stamped.</summary>
+    public long LoadClock { get; internal set; }
 }
 
 /// <summary>
@@ -137,6 +142,17 @@ public sealed class MachineInventory
     /// been on the machine for when the local record was written). Re-expresses the same remaining with
     /// LoadBoards = observed − boardsRun, so a later correction attributes only the run this reel really saw.
     /// No-op if not tracked; boardsRun is clamped to the observed count.</summary>
+    /// <summary>Stamp the reconcile base: the quantity confirmed at load (or recount) and the line clock then.</summary>
+    public void StampLoad(int feeder, int loadQty, long loadClock)
+    {
+        lock (_lock)
+        {
+            if (!_feeders.TryGetValue(feeder, out var f)) return;
+            f.LoadQty = Math.Max(0, loadQty);
+            f.LoadClock = Math.Max(0, loadClock);
+        }
+    }
+
     public void SetBoardsRun(int feeder, int boardsRun)
     {
         lock (_lock)

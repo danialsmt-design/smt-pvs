@@ -232,6 +232,43 @@ ATTRITION AT PARTS-OUT
 └─ REVERSE  delete attrition.json + calibration.json (report/shadow only; nothing else was written)
 ```
 
+### Balance reconcile (load qty · line clock · learned rate)  🔧draft (built 2026-09-24)
+*Danial: "recheck the balance — when loaded, when exhausted, how many boards completed; if it does not match closely,
+adjust the balance; check periodically and update it." Root case: L5 M3 silent 08:37–12:11 on 2026-09-22 (235 panels
+never deducted, reel reported 1,944 left when empty); L1 reels over-deducted to zero (list count too high).*
+
+```
+BALANCE RECONCILE
+│
+├─ TRIGGER  every 5-min tick · every re-baseline · at a confirmed exhaust (that feeder) · POST /api/inventory/reconcile
+│
+├─ INPUTS  per reel: LoadQty (confirmed at load / recount) · LoadClock (line clock then)
+│          line clock = monotonic last-machine panels + panels added by HMI/supervisor adoption (persisted, dpc-state)
+│          rate = part's learned REAL rate (≥ 2 confirmed exhausts, within ±50 % of the list) else the list count
+│
+├─ ACTION  expected = LoadQty − rate × (clock − LoadClock), clamped ≥ 0
+│          tolerance = max(3 panels' worth, 1 % of LoadQty)
+│          |tracked − expected| > tolerance → tracked := expected (audit BalanceReconcile) → StockOut write follows
+│
+├─ AT EXHAUST  real rate = LoadQty ÷ panels since load → learned per part (over-count visible: negative row)
+│              attrition row = LIST theory vs reality: LoadQty − list × panels (negative = PVS hit zero first)
+│
+├─ SILENT MACHINE  line clock moved ≥ 10 panels between ticks, machine tally did not → alarm (health warn, audit
+│                  MachineSilent), real-time enable re-sent (cooldown/report-guarded); reels covered by the reconcile
+│
+├─ INVARIANTS
+│     • a physical recount / keyed count / new reel is a NEW base (LoadQty, LoadClock) — never overridden by an older one
+│     • a reel PVS ran to zero stays tracked at zero (its UID is on the feeder) — never dropped at a re-baseline
+│     • the line clock never goes backwards; if it did (state reset) the reel is left alone
+│
+├─ MUST NOT
+│     ✗ use one machine's own tally as the clock     ✗ apply a learned rate outside ±50 % of the list     ✗ touch StockOut directly (the sync does)
+│
+├─ OUTPUT  log + audit per adjustment · /api/health serial.silent · attrition rows may be negative
+│
+└─ REVERSE  a supervisor recount (SetRemaining) sets the balance and the base
+```
+
 ### Feeder decrement per board  ▫ to write
 ### Parts-out retire (consume)  ▫ to write
 ### StockOut sync  ▫ to write

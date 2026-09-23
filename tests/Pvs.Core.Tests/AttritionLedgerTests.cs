@@ -32,11 +32,11 @@ public class AttritionLedgerTests
     }
 
     [Fact]
-    public void Negative_remaining_and_zero_start_never_produce_a_percent()
+    public void Negative_remaining_is_kept_as_over_count_and_zero_start_never_produces_a_percent()
     {
         var l = new AttritionLedger();
         var a = l.Evaluate(T0, "L", 1, 1, "P", "U", 1000, 100, 1, -5);
-        Assert.Equal(0, a.Shortage); Assert.False(a.Over);
+        Assert.Equal(-5, a.Shortage); Assert.False(a.Over);   // −0.5 %: within limit, but the over-count stays visible
         var b = l.Evaluate(T0, "L", 1, 1, "P", "U", 0, 100, 1, 300);
         Assert.Equal(0.0, b.Percent); Assert.False(b.Over);
     }

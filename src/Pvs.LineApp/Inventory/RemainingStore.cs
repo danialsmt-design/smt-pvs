@@ -5,7 +5,7 @@ namespace Pvs.LineApp.Inventory;
 /// <summary>One feeder's recorded remaining (the local record on the line PC).</summary>
 /// <param name="BoardsRun">Boards this reel had been on the machine for when the record was written (its anchor), so
 /// a restart can restore how much of the run the reel really saw. 0 = unknown / loaded just now.</param>
-public sealed record RemainingEntry(int Machine, int Feeder, string Part, string Uid, int Remaining, DateTime At, int BoardsRun = 0);
+public sealed record RemainingEntry(int Machine, int Feeder, string Part, string Uid, int Remaining, DateTime At, int BoardsRun = 0, int LoadQty = 0, long LoadClock = 0);
 
 /// <summary>
 /// The line-local record of each feeder's remaining piece-count, persisted to remaining.json. This is the

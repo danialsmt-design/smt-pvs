@@ -75,6 +75,30 @@ public sealed class ExhaustCalibration
         }
     }
 
+    /// <summary>Record a confirmed exhaust as a REAL RATE: the reel held <paramref name="loadQty"/> and emptied over
+    /// <paramref name="panelsSinceLoad"/>, so real placements per panel = loadQty ÷ panels. Unlike <see cref="Record"/>
+    /// this sees OVER-counting too (PVS reached zero before the reel did), because it never looks at the clamped
+    /// balance. errPerBoard = real − modelled.</summary>
+    public PartCalibration? RecordRate(string part, int loadQty, long panelsSinceLoad, int mountedPerBoard, DateTime at)
+    {
+        if (string.IsNullOrWhiteSpace(part) || loadQty <= 0 || panelsSinceLoad < _minBoards) return null;
+        double real = loadQty / (double)panelsSinceLoad;
+        double errPerBoard = real - mountedPerBoard;
+        lock (_lock)
+        {
+            if (_byPart.TryGetValue(part, out var prev))
+            {
+                double ewma = _alpha * errPerBoard + (1 - _alpha) * prev.PerBoardErrorEwma;
+                var upd = prev with { PerBoardErrorEwma = ewma, Samples = prev.Samples + 1, LastErrorPerBoard = errPerBoard, UpdatedAt = at };
+                _byPart[part] = upd;
+                return upd;
+            }
+            var first = new PartCalibration(part, errPerBoard, 1, errPerBoard, at);
+            _byPart[part] = first;
+            return first;
+        }
+    }
+
     public PartCalibration? Get(string part)
     {
         if (string.IsNullOrWhiteSpace(part)) return null;

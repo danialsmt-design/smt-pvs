@@ -48,9 +48,9 @@ public sealed class AttritionLedger
     public ReelAttrition Evaluate(DateTime at, string lotNo, int machine, int feeder, string part, string reelUid,
                                   int startQty, int boardsThisReel, int mountedPerBoard, int remainingAtExhaust)
     {
-        int shortage = Math.Max(0, remainingAtExhaust);
+        int shortage = remainingAtExhaust;   // may be NEGATIVE: PVS reached zero before the reel did (over-count)
         double pct = startQty > 0 ? shortage / (double)startQty * 100.0 : 0.0;
-        bool over = startQty > 0 && pct > LimitPct;
+        bool over = startQty > 0 && Math.Abs(pct) > LimitPct;   // either direction is a count error worth seeing
         bool escalate = over && boardsThisReel >= MinBoards;
         return new ReelAttrition(at, lotNo ?? "", machine, feeder, part ?? "", reelUid ?? "", startQty,
             boardsThisReel, mountedPerBoard, shortage, Math.Round(pct, 2), over, escalate);

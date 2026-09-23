@@ -129,6 +129,10 @@ public sealed class SessionCoordinator : IDisposable
     // under — one DB row per bucket per window — so a changeover mid-window never misattributes boards, and
     // enabling the flag only writes boards produced FROM THEN ON (not the whole monotonic history).
     private long _m4PanelsTotal;          // monotonic panels off the last machine (never reset) — lot-count anchor base
+    // LINE BOARD CLOCK for reel reconciliation: the monotonic total PLUS every panel a supervisor/HMI adoption added
+    // to the lot count (panels the counting machine missed). Persisted with dpc-state so it survives restarts.
+    private long _clockAdopted;
+    private long LineClock() { lock (_gate) return _m4PanelsTotal + _clockAdopted; }
     private readonly Pvs.Core.Runtime.ProductionCountLedger _dpc = new();   // unwritten panels, keyed by production context
     private readonly HashSet<string> _shiftTriggerDone = new();   // shift keys whose shift-change trigger has fired or been satisfied
     private readonly Pvs.Core.Shifts.ShiftSchedule _shifts;
@@ -270,8 +274,36 @@ public sealed class SessionCoordinator : IDisposable
         foreach (var m in set) RecheckProgram(m, "machines disagree on the loaded model");
     }
 
+    private readonly Pvs.Core.Runtime.SilentMachineWatch _silentWatch = new();
+    /// <summary>Machines that reported no board-completes while the line clock moved (health + alarm).</summary>
+    public IReadOnlyDictionary<int, (long GapPanels, DateTime Since)> SilentMachines => _silentWatch.Silent;
+
+    /// <summary>A machine that reports NO board-completes while the line clock advances has lost its real-time
+    /// reporting (a restart mid-AUTO: the enable is refused). Flag it, audit once, and re-send the enable —
+    /// cooldown-guarded, never during a report read. (L5 M3 2026-09-22 08:37–12:11: 235 panels unreported.)</summary>
+    private void CheckSilentMachines()
+    {
+        long clock = LineClock();
+        foreach (var ch in _channels.Values)
+        {
+            bool eligible = ch.IsOnline && !IsMachineSkipped(ch.Machine);
+            var verdict = _silentWatch.Observe(ch.Machine, clock, ch.Inventory.BoardsApplied, eligible, DateTime.Now);
+            if (verdict == Pvs.Core.Runtime.SilentVerdict.WentSilent)
+            {
+                var g = _silentWatch.Silent[ch.Machine];
+                _log.LogWarning("M{M} SILENT: the line completed {Gap} panels but M{M} reported none — re-sending real-time enable; its reels are being re-derived from the line clock.", ch.Machine, g.GapPanels);
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "MachineSilent", ch.Machine, 0, $"{g.GapPanels} panels unreported",
+                    Note: "no board-completes while the line clock moved; real-time enable re-sent", LotNo: _currentLotNo));
+            }
+            else if (verdict == Pvs.Core.Runtime.SilentVerdict.Recovered)
+                _log.LogInformation("M{M} reporting again.", ch.Machine);
+            if (_silentWatch.Silent.ContainsKey(ch.Machine)) ch.RetryRealtime();
+        }
+    }
+
     public async Task AutoDetectModelAsync(CancellationToken ct = default)
     {
+        try { CheckSilentMachines(); } catch (Exception ex) { _log.LogDebug(ex, "Silent-machine check failed."); }
         try { RecheckDisagreeingPrograms(); } catch (Exception ex) { _log.LogDebug(ex, "Program re-check failed."); }
         if (NonCanon) return;   // parked on a non-Canon model — never auto-pin or verify a Canon model
         try
@@ -868,7 +900,7 @@ public sealed class SessionCoordinator : IDisposable
     // The unwritten-panel accounting lives in Pvs.Core.Runtime.ProductionCountLedger (pure + unit-tested);
     // this half is only the persistence and the DB write.
     private sealed record DpcBucketRow(string Lot, string Model, string Side, long Panels, DateTime FirstAt);
-    private sealed record DpcStateData(long M4PanelsTotal, List<DpcBucketRow>? Pending = null);
+    private sealed record DpcStateData(long M4PanelsTotal, List<DpcBucketRow>? Pending = null, long ClockAdopted = 0);
     private static string DpcStatePath => System.IO.Path.Combine(AppContext.BaseDirectory, "dpc-state.json");
     // ONE shift clock: the configured shiftTimes (LineConfig -> ShiftSchedule). The DPC label, the DPC slot, the
     // Daiya sheet and the shift-check trigger all derive from it — they used to hard-code 07:35/19:35 while
@@ -881,9 +913,9 @@ public sealed class SessionCoordinator : IDisposable
 
     private void SaveDpcState()
     {
-        long total; lock (_gate) total = _m4PanelsTotal;
+        long total, adopted; lock (_gate) { total = _m4PanelsTotal; adopted = _clockAdopted; }
         var d = new DpcStateData(total,
-            _dpc.Snapshot().Select(b => new DpcBucketRow(b.Key.Lot, b.Key.Model, b.Key.Side, b.Panels, b.FirstAt)).ToList());
+            _dpc.Snapshot().Select(b => new DpcBucketRow(b.Key.Lot, b.Key.Model, b.Key.Side, b.Panels, b.FirstAt)).ToList(), adopted);
         try { Pvs.Core.Persistence.AtomicFile.Write(DpcStatePath, System.Text.Json.JsonSerializer.Serialize(d)); }
         catch (Exception ex) { _log.LogDebug(ex, "DPC state save failed."); }
     }
@@ -896,6 +928,7 @@ public sealed class SessionCoordinator : IDisposable
             var d = Pvs.Core.Persistence.AtomicFile.Load(DpcStatePath, __t => System.Text.Json.JsonSerializer.Deserialize<DpcStateData>(__t, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }));
             if (d is null) return;
             _m4PanelsTotal = d.M4PanelsTotal;
+            _clockAdopted = d.ClockAdopted;
             // Unwritten panels survive a restart so the next flush neither re-writes nor loses them. With the
             // writer OFF the operator app owns the rows, so anything left over is dropped rather than flushed
             // later as one impossible lump; the ledger also drops buckets left from an earlier shift.
@@ -1987,6 +2020,10 @@ public sealed class SessionCoordinator : IDisposable
         if (!_config.HasPanelBoards(model.Name))
             _log.LogWarning("Model {Model} has NO panelBoards entry — boards-per-panel defaulted to 1. Decrement, lot progress and DPC will be off by the true factor until line.config.json gets an entry. (Audit H8)", model.Name);
         var wrongPart = new List<(int Machine, int Feeder, string Part, string Uid)>();
+        // Remember each machine's tally BEFORE the clear: a re-baseline that seeds it to the lot count while the
+        // machine itself reported fewer panels is a machine that went SILENT (L5 M3 2026-09-22: 65 -> 300, 235
+        // panels never deducted). The reconcile below re-derives the reels; this makes the jump visible.
+        var tallyBefore = _channels.ToDictionary(kv => kv.Key, kv => kv.Value.Inventory.BoardsApplied);
         foreach (var ch in _channels.Values) ch.Inventory.Clear();
         foreach (var f in feeders)
         {
@@ -2014,15 +2051,25 @@ public sealed class SessionCoordinator : IDisposable
             // 2026-09-14 the lines without write-back never updated it, so preferring it put every reel back to its
             // full issued quantity at every restart and check; and it lags the local record by up to one timer tick.
             // (Restart audit 2026-09-11.) Write-back is now always on, so the two agree within a tick.
-            int? qty = null; int boardsRun = 0;
+            int? qty = null; int boardsRun = 0; int loadQty = 0; long loadClock = 0;
             var loc = _remaining.Get(f.Machine, f.Feeder);
             if (loc is not null && string.Equals(loc.Uid?.Trim(), reel.Uid.Trim(), StringComparison.OrdinalIgnoreCase))
-            { qty = loc.Remaining; boardsRun = loc.BoardsRun; }
+            { qty = loc.Remaining; boardsRun = loc.BoardsRun; loadQty = loc.LoadQty; loadClock = loc.LoadClock; }
             if (qty is null)
             {
                 try { qty = await _repo.FindStockOutQtyAsync(reel.Uid, f.Part, ct); } catch { qty = null; }
             }
-            if (qty is int q && q > 0) { ch.Inventory.LoadReel(f.Feeder, reel.Uid, q); if (boardsRun > 0) restoreRun[(f.Machine, f.Feeder)] = boardsRun; }
+            // A reel PVS already ran to zero stays TRACKED at zero (its UID is on the feeder); dropping it would hide
+            // the over-count and leave the feeder untracked until the next scan.
+            if (qty is int q && (q > 0 || loc is not null))
+            {
+                ch.Inventory.LoadReel(f.Feeder, reel.Uid, Math.Max(0, q));
+                if (boardsRun > 0) restoreRun[(f.Machine, f.Feeder)] = boardsRun;
+                // Reconcile base: the record's, or — for a reel loaded before this build — stamp NOW (from here on
+                // the balance is checked against the line clock; nothing before now can be re-derived).
+                if (loadQty > 0 && loadClock > 0) ch.Inventory.StampLoad(f.Feeder, loadQty, loadClock);
+                else ch.Inventory.StampLoad(f.Feeder, Math.Max(0, q), LineClock());
+            }
         }
 
         // OFF-LIST REELS ARE UNLOADED AUTOMATICALLY (Danial, 2026-09-07: "if the parts are not on the feeder list for
@@ -2074,6 +2121,18 @@ public sealed class SessionCoordinator : IDisposable
         // correction is shared by the run each reel saw — not charged in full to a reel loaded just before the restart.
         foreach (var kv in restoreRun)
             if (_channels.TryGetValue(kv.Key.Item1, out var rch)) rch.Inventory.SetBoardsRun(kv.Key.Item2, kv.Value);
+        foreach (var kv in tallyBefore)
+        {
+            int target = seed + (offsets.TryGetValue(kv.Key, out var o) ? o : 0);
+            if (kv.Value > 0 && target - kv.Value >= Pvs.Core.Runtime.SilentMachineWatch.MinGapPanels)
+            {
+                _log.LogWarning("Re-baseline seeded M{M} from {Had} to {Seed} panels: the machine reported {Gap} fewer panels than the line made (silent serial?). Reels re-derived from the line clock.",
+                    kv.Key, kv.Value, target, target - kv.Value);
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "TallySeedJump", kv.Key, 0, $"{kv.Value}->{target}",
+                    Note: $"M{kv.Key} tally seeded up by {target - kv.Value} panels at re-baseline (machine under-reported)", LotNo: _currentLotNo));
+            }
+        }
+        try { ReconcileBalances("re-baseline"); } catch (Exception ex) { _log.LogDebug(ex, "Reconcile after baseline failed."); }
 
         _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}{Offsets}.", model.Name, side, feeders.Count, extra, seed,
             offsets.Count == 0 ? "" : " with offsets " + string.Join(", ", offsets.Select(kv => $"M{kv.Key}:{kv.Value:+#;-#;0}")));
@@ -2097,7 +2156,7 @@ public sealed class SessionCoordinator : IDisposable
             foreach (var f in ch.Inventory.Feeders)
                 if (f.IsTracked && !string.IsNullOrWhiteSpace(f.ReelUid))
                     items.Add(new Pvs.LineApp.Inventory.RemainingEntry(
-                        ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, f.Remaining, DateTime.Now, RunOf(ch, f.Feeder)));
+                        ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, f.Remaining, DateTime.Now, RunOf(ch, f.Feeder), f.LoadQty, f.LoadClock));
         // Guard: never overwrite the saved balances with an EMPTY set. Right after a restart (before the
         // feeders are grounded by a shift/model check) nothing is tracked yet; saving empty here would wipe
         // the last-known balances that remaining.json holds as the source of truth. Skip until we have data.
@@ -2105,10 +2164,56 @@ public sealed class SessionCoordinator : IDisposable
         return Task.FromResult(items.Count);
     }
 
-    /// <summary>Timer body: record local remaining, then mirror every reel balance to StockOuts (always on).</summary>
+    /// <summary>
+    /// BALANCE RECONCILE (Danial 2026-09-24: "check the balance periodically and update the balance"). For every
+    /// tracked reel with a reconcile base: expected = LoadQty − rate × (line clock now − line clock at load), rate =
+    /// the part's learned real rate (≥2 confirmed exhausts) else the list count. Off by more than the tolerance →
+    /// the balance is SET to the expected value (audited). Catches a machine whose serial went silent, a restart gap,
+    /// a re-baseline that seeded a tally past what the machine reported, and — once learned — a wrong list count.
+    /// Returns the number of reels adjusted.
+    /// </summary>
+    public int ReconcileBalances(string reason, int? onlyMachine = null, int? onlyFeeder = null)
+    {
+        long clock = LineClock();
+        var adjusted = new List<(int M, int F, string Part, string Uid, int From, int To, long Panels, double Rate)>();
+        foreach (var ch in _channels.Values)
+        {
+            if (onlyMachine is int om && ch.Machine != om) continue;
+            if (IsMachineSkipped(ch.Machine)) continue;
+            foreach (var f in ch.Inventory.Feeders)
+            {
+                if (!f.IsTracked || string.IsNullOrWhiteSpace(f.ReelUid) || f.LoadQty <= 0 || f.LoadClock <= 0) continue;
+                if (onlyFeeder is int of && f.Feeder != of) continue;
+                long panels = clock - f.LoadClock;
+                if (panels < 0) continue;   // clock went backwards (state reset) — leave it
+                double rate = Pvs.Core.Inventory.BalanceReconciler.RateFor(f.MountedPerBoard, _calibration.Get(f.PartNumber));
+                int expected = Pvs.Core.Inventory.BalanceReconciler.Expected(f.LoadQty, rate, panels);
+                int tol = Pvs.Core.Inventory.BalanceReconciler.Tolerance(f.LoadQty, rate);
+                if (!Pvs.Core.Inventory.BalanceReconciler.NeedsAdjust(f.Remaining, expected, tol)) continue;
+                int from = f.Remaining;
+                ch.Inventory.SetRemaining(f.Feeder, expected);
+                ch.Inventory.StampLoad(f.Feeder, f.LoadQty, f.LoadClock);   // SetRemaining re-anchors; keep the base
+                _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, expected, DateTime.Now, 0, f.LoadQty, f.LoadClock));
+                adjusted.Add((ch.Machine, f.Feeder, f.PartNumber, f.ReelUid!, from, expected, panels, rate));
+            }
+        }
+        foreach (var a in adjusted)
+        {
+            _log.LogWarning("Balance reconciled M{M} F{F} {Part} reel {Uid}: {From} -> {To} pcs (loaded {Load}, {Panels} panels since load at {Rate:0.##}/panel) — {Reason}.",
+                a.M, a.F, a.Part, a.Uid, a.From, a.To, 0, a.Panels, a.Rate, reason);
+            Audit(new VerificationRecord(DateTime.Now, _config.LineName, "BalanceReconcile", a.M, a.F, $"{a.From}->{a.To}",
+                NewReelUid: a.Uid, NewReelPart: a.Part, Quantity: a.To, Overridden: true,
+                Note: $"{reason}: {a.Panels} panels since load at {a.Rate:0.##}/panel; tracked {a.From}, expected {a.To}", LotNo: _currentLotNo));
+        }
+        if (adjusted.Count > 0) SyncStockOutsSoon();
+        return adjusted.Count;
+    }
+
+    /// <summary>Timer body: reconcile, record local remaining, then mirror every reel balance to StockOuts (always on).</summary>
     private async Task RecordAndSyncAsync(CancellationToken ct = default)
     {
         if (NonCanon) return;   // no Canon BOM/feeders to record or mirror to StockOuts
+        try { ReconcileBalances("5-min check"); } catch (Exception ex) { _log.LogWarning(ex, "Balance reconcile failed."); }
         try { await RecordRemainingAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Local remaining record failed."); }
         try { await RefreshLotCoverageAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Lot coverage refresh failed."); }
         try { await SyncRemainingToStockOutsAsync(ct); } catch (Exception ex) { _log.LogWarning(ex, "StockOuts sync pass failed."); }
@@ -2183,7 +2288,8 @@ public sealed class SessionCoordinator : IDisposable
         var fs = ch.Inventory.Get(feeder);
         if (fs is null) return false;
         ch.Inventory.SetRemaining(feeder, qty);
-        _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, feeder, fs.PartNumber, fs.ReelUid ?? "", Math.Max(0, qty), DateTime.Now));
+        ch.Inventory.StampLoad(feeder, Math.Max(0, qty), LineClock());   // a keyed count is a new reconcile base
+        _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(machine, feeder, fs.PartNumber, fs.ReelUid ?? "", Math.Max(0, qty), DateTime.Now, 0, Math.Max(0, qty), LineClock()));
         SyncStockOutsSoon();
         return true;
     }
@@ -2279,13 +2385,16 @@ public sealed class SessionCoordinator : IDisposable
     /// READ-ONLY — never rewrites a reel balance (never lose a reel's count); it only learns a correction factor.
     /// </summary>
     /// <summary>The outgoing reel's usage as it stood when the operator confirmed its exhaust by scanning a new reel.</summary>
-    private readonly record struct ExhaustSample(int Machine, int Feeder, string Part, string ReelUid, int StartQty, int BoardsThisReel, int MountedPerBoard, int Remaining);
+    private readonly record struct ExhaustSample(int Machine, int Feeder, string Part, string ReelUid, int StartQty, int BoardsThisReel, int MountedPerBoard, int Remaining,
+                                                 int LoadQty = 0, long PanelsSinceLoad = 0);
 
     private void RecordExhaustCalibration(ExhaustSample x)
     {
         string key = $"{x.Machine}|{x.Feeder}|{x.ReelUid}";
         lock (_gate) { if (!_calibratedReels.Add(key)) return; }   // already sampled this reel's exhaust
-        var cal = _calibration.Record(x.Part, x.BoardsThisReel, x.Remaining, x.MountedPerBoard, DateTime.Now);
+        var cal = x.LoadQty > 0 && x.PanelsSinceLoad > 0
+            ? _calibration.RecordRate(x.Part, x.LoadQty, x.PanelsSinceLoad, x.MountedPerBoard, DateTime.Now)   // real rate: sees over-count too
+            : _calibration.Record(x.Part, x.BoardsThisReel, x.Remaining, x.MountedPerBoard, DateTime.Now);
         if (cal is null) return;   // too few boards to be meaningful
         _log.LogInformation("Exhaust-calib M{M} F{F} {Part}: reel ran {B} boards, PVS still showed {R} pcs at the confirmed exhaust → " +
             "err {E:0.00}/board (drift {D:+0.0;-0.0}%, {N} samples).",
@@ -2417,6 +2526,7 @@ public sealed class SessionCoordinator : IDisposable
             {
                 _lotCountFor = _currentLotNo;
                 _lotAnchorTotal = _m4PanelsTotal - machinePanels;
+                if (machinePanels > oldPanels) _clockAdopted += machinePanels - oldPanels;   // panels the line made that the counter missed
                 adopted = true;
             }
         }
@@ -3251,6 +3361,7 @@ public sealed class SessionCoordinator : IDisposable
             {
                 if (_channels.TryGetValue(corrected.Machine, out var ch) && ch.Inventory.Get(corrected.Feeder) is not null)
                     ch.Inventory.SetRemaining(corrected.Feeder, qty);
+                    ch.Inventory.StampLoad(corrected.Feeder, Math.Max(0, qty), LineClock());   // physical recount = new base
             }
             _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(corrected.Machine, corrected.Feeder,
                 corrected.ScannedPart ?? "", corrected.ReelUid ?? "", Math.Max(0, qty), DateTime.Now));
@@ -3330,7 +3441,19 @@ public sealed class SessionCoordinator : IDisposable
                     && chOld.Inventory.ReelUsage(c.Feeder) is { } u && !string.IsNullOrWhiteSpace(u.ReelUid)
                     && string.Equals(u.ReelUid.Trim(), c.OldReelUid.Trim(), StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(u.ReelUid.Trim(), c.NewReelUid.Trim(), StringComparison.OrdinalIgnoreCase))
-                    exhausted = new ExhaustSample(c.Machine, c.Feeder, u.Part, u.ReelUid, u.StartQty, u.BoardsThisReel, u.MountedPerBoard, u.Remaining);
+                {
+                    // Danial 2026-09-24: at exhaust, recheck from the load: loaded qty, panels completed since, list rate.
+                    // The row reports LIST theory vs reality (negative = PVS reached zero first); the live balance is
+                    // reconciled before the sample so the retire/attrition never carry a stale figure.
+                    var fsOld = chOld.Inventory.Get(c.Feeder);
+                    int loadQty = fsOld?.LoadQty ?? 0; long panelsSince = fsOld is { LoadClock: > 0 } ? LineClock() - fsOld.LoadClock : 0;
+                    int listBalance = loadQty > 0 && panelsSince > 0
+                        ? (int)Math.Max(int.MinValue, loadQty - (long)u.MountedPerBoard * panelsSince)   // unclamped: over-count shows as negative
+                        : u.Remaining;
+                    int startForRow = loadQty > 0 ? loadQty : u.StartQty;
+                    int boardsForRow = panelsSince > 0 ? (int)Math.Min(int.MaxValue, panelsSince) : u.BoardsThisReel;
+                    exhausted = new ExhaustSample(c.Machine, c.Feeder, u.Part, u.ReelUid, startForRow, boardsForRow, u.MountedPerBoard, listBalance, loadQty, panelsSince);
+                }
                 // COMMIT the swap only now that it is complete: capture the OUTGOING reel (for auto-retire), then
                 // remember the new reel on the feeder. A skipped/cancelled change ("false alarm") commits nothing —
                 // the old reel stays mapped and is NOT retired. (Audit finding H5.)
@@ -3356,6 +3479,7 @@ public sealed class SessionCoordinator : IDisposable
                     && _channels.TryGetValue(c.Machine, out var chNew) && chNew.Inventory.Get(c.Feeder) is not null)
                 {
                     chNew.Inventory.LoadReel(c.Feeder, c.NewReelUid!, newQty);
+                    chNew.Inventory.StampLoad(c.Feeder, newQty, LineClock());
                     _remaining.Set(new Pvs.LineApp.Inventory.RemainingEntry(
                         c.Machine, c.Feeder, c.NewReelPart ?? c.ExpectedPart, c.NewReelUid!, Math.Max(0, newQty), DateTime.Now));
                     SyncStockOutsSoon();

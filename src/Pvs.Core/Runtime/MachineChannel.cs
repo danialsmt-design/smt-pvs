@@ -79,6 +79,9 @@ public sealed class MachineChannel
     /// <summary>Call once when the port opens: switches the machine to real-time reporting.</summary>
     public void Start() { _lastC5Ro = default; EnableRealtime(DateTime.Now); }
 
+    /// <summary>Re-send the real-time enable for a machine that went silent (cooldown- and report-guarded).</summary>
+    public void RetryRealtime() => EnableRealtime(DateTime.Now);
+
     /// <summary>True while a C1M/C1Z report is streaming in. NOTHING else may be sent to the machine during this
     /// window (only the report's own A0 acks) — a C3P or C5RO fired mid-report interrupts the D0 dump and the read
     /// fails with A4E00. Both the auto-detect C3P and the R1OL C5RO check this.</summary>
