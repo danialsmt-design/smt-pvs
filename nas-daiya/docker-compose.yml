@@ -26,4 +26,4 @@ services:
       # Lines to monitor: "Name=ip". The NAS reaches the lines over the FACTORY LAN (192.168.0.x) — PVS's
       # 5199 is Tailscale-only, so each line has a scoped firewall rule allowing only this NAS (192.168.0.169).
       # These are DHCP addresses; if a line PC's IP changes, update it here and restart the project.
-      - PVS_LINES=Line 1=192.168.0.105,Line 2=192.168.0.162,Line 3=192.168.0.126,Line 4=192.168.0.144,Line 5=192.168.0.190
+      - PVS_LINES=Line 1=192.168.0.141,Line 2=192.168.0.147,Line 3=192.168.0.83,Line 4=192.168.0.144,Line 5=192.168.0.157
