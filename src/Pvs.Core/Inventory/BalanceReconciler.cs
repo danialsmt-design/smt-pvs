@@ -34,15 +34,11 @@ public static class BalanceReconciler
     /// <summary>True when the tracked balance is off the expected one by more than the tolerance.</summary>
     public static bool NeedsAdjust(int tracked, int expected, int tolerance) => Math.Abs(tracked - expected) > tolerance;
 
-    /// <summary>The placements-per-panel to derive with: the learned real rate when the part has enough confirmed
-    /// exhausts behind it and the learned rate is sane (within ±50 % of the list), otherwise the list count.</summary>
-    public static double RateFor(int mountedPerPanel, PartCalibration? learned, int minSamples = 2)
-    {
-        if (learned is null || learned.Samples < minSamples || mountedPerPanel <= 0) return mountedPerPanel;
-        double r = learned.CorrectedPerBoard(mountedPerPanel);
-        if (r < mountedPerPanel * 0.5 || r > mountedPerPanel * 1.5) return mountedPerPanel;   // implausible learning — keep the list
-        return r;
-    }
+    /// <summary>The placements-per-panel to derive with: ALWAYS the feeder-list count. Danial 2026-09-24: "the
+    /// feeder list can't be wrong or the product will not qualify" — so a reel that empties early or late is a
+    /// reel-quantity or throw problem, and the report must show it, never absorb it into a learned rate. The real
+    /// rate from each exhaust (<see cref="RealRate"/>) is recorded for the report only.</summary>
+    public static double RateFor(int mountedPerPanel, PartCalibration? learned, int minSamples = 2) => mountedPerPanel;
 
     /// <summary>The real placements per panel a confirmed exhaust proves: the reel emptied, so everything it held
     /// went out over the panels it saw. Null when the run is too short to mean anything.</summary>

@@ -244,7 +244,8 @@ BALANCE RECONCILE
 │
 ├─ INPUTS  per reel: LoadQty (confirmed at load / recount) · LoadClock (line clock then)
 │          line clock = monotonic last-machine panels + panels added by HMI/supervisor adoption (persisted, dpc-state)
-│          rate = part's learned REAL rate (≥ 2 confirmed exhausts, within ±50 % of the list) else the list count
+│          rate = the feeder-list count, ALWAYS (Danial: the list can't be wrong or the product won't qualify);
+│                 the real rate each exhaust proves (LoadQty ÷ panels) is reported only, never applied
 │
 ├─ ACTION  expected = LoadQty − rate × (clock − LoadClock), clamped ≥ 0
 │          tolerance = max(3 panels' worth, 1 % of LoadQty)
@@ -262,7 +263,7 @@ BALANCE RECONCILE
 │     • the line clock never goes backwards; if it did (state reset) the reel is left alone
 │
 ├─ MUST NOT
-│     ✗ use one machine's own tally as the clock     ✗ apply a learned rate outside ±50 % of the list     ✗ touch StockOut directly (the sync does)
+│     ✗ use one machine's own tally as the clock     ✗ apply a learned rate (the list is the rate)     ✗ touch StockOut directly (the sync does)
 │
 ├─ OUTPUT  log + audit per adjustment · /api/health serial.silent · attrition rows may be negative
 │

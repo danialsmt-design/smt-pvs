@@ -30,17 +30,13 @@ public class BalanceReconcilerTests
     }
 
     [Fact]
-    public void Learned_rate_is_used_only_with_enough_samples_and_when_plausible()
+    public void The_list_count_is_always_the_rate_a_learned_rate_is_never_applied()
     {
         Assert.Equal(8, BalanceReconciler.RateFor(8, null));
-        var one = new PartCalibration("P", 4.0, 1, 4.0, T0);
-        Assert.Equal(8, BalanceReconciler.RateFor(8, one));               // 1 sample: list
         var two = new PartCalibration("P", 4.0, 2, 4.0, T0);
-        Assert.Equal(12.0, BalanceReconciler.RateFor(8, two));            // learned 12/panel (L5 M2 F114 case)
-        var crazy = new PartCalibration("P", 60.0, 5, 60.0, T0);
-        Assert.Equal(8, BalanceReconciler.RateFor(8, crazy));             // 68/panel vs list 8: implausible, keep list
+        Assert.Equal(8, BalanceReconciler.RateFor(8, two));               // the product's placement count is fixed
         var overCount = new PartCalibration("P", -2.0, 3, -2.0, T0);
-        Assert.Equal(6.0, BalanceReconciler.RateFor(8, overCount));       // list too high (L1 case): learned lower rate
+        Assert.Equal(8, BalanceReconciler.RateFor(8, overCount));
     }
 
     [Fact]
