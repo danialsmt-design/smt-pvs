@@ -245,6 +245,8 @@ BALANCE RECONCILE
 ├─ INPUTS  per reel: LoadQty (confirmed at load / recount) · LoadClock (line clock then)
 │          line clock = monotonic last-machine panels + panels added by HMI/supervisor adoption (persisted, dpc-state)
 │          rate = the feeder-list count, ALWAYS (Danial: the list can't be wrong or the product won't qualify);
+│                 UNITS: DB feeder map QtyPerUnit = per child board (× boards-per-panel); a pen-drive Mount Step / JUKI QTY
+│                 = per PANEL as-is (2026-09-24: L1 charged 64 for a 16/panel feeder, L3 ×6, every reel to zero early)
 │                 the real rate each exhaust proves (LoadQty ÷ panels) is reported only, never applied
 │
 ├─ ACTION  expected = LoadQty − rate × (clock − LoadClock), clamped ≥ 0

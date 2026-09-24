@@ -10,7 +10,7 @@ namespace Pvs.Core.Feeders;
 ///           <c>F11, VE3-1480-104, 84, 8mm</c>  (NO Cell# column — the cell comes from the chosen machine).
 ///
 /// Feeder, part AND the placement count are used: the Sony "Mount Step" column / the JUKI "QTY" column is how
-/// many pieces that feeder places per board — the number the live decrement needs (a row without it decremented
+/// many pieces that feeder places per PANEL (the program mounts the whole panel — NOT per child board; 2026-09-24) — the number the live decrement needs (a row without it decremented
 /// at 1 per board, which on L1 2026-09-07 left reels running out while PVS showed thousands). The caller always
 /// supplies the machine; a Sony file's Cell# is used only to catch "wrong file for this cell".
 /// </summary>

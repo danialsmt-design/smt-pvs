@@ -75,6 +75,14 @@ public sealed class SessionCoordinator : IDisposable
     // Persisted with the manual feeder lists; cleared per machine, or wholesale by Reload-from-DB.
     private readonly HashSet<int> _skippedMachines = new();
     private readonly Dictionary<(int machine, int feeder), int> _expectedQty = new();  // per-child-board Mount Step (QtyPerUnit); cached with _expected for the forecast rate when the DB is unreachable
+    // Feeders whose _expectedQty is ALREADY PER PANEL: a Sony pen-drive "Mount Step" (and the JUKI QTY) count the
+    // placements of the machine PROGRAM, which mounts the whole panel — NOT one child board. Multiplying that by the
+    // panel factor again charged L1 64/panel for a 16/panel feeder from 2026-09-22 (every reel ran to zero at a
+    // quarter of its life; L3 at 6×). The DB feeder map (QtyPerUnit) stays per child board (validated by C1Z 09-17).
+    private readonly HashSet<(int machine, int feeder)> _expectedQtyPerPanel = new();
+    /// <summary>Placements per PANEL for a feeder: a file count as-is, a DB count × boards-per-panel.</summary>
+    private int PerPanelMount((int machine, int feeder) key, int qty, int panels) =>
+        _expectedQtyPerPanel.Contains(key) ? Math.Max(1, qty) : (qty > 0 ? qty : 1) * Math.Max(1, panels);
     private readonly Dictionary<(int machine, int feeder), PartsOutEvent> _pending = new();
     private readonly object _gate = new();
     private readonly System.Threading.Timer _housekeeping;
@@ -542,7 +550,7 @@ public sealed class SessionCoordinator : IDisposable
             {
                 _expected.Clear();
                 foreach (var kv in fresh) _expected[kv.Key] = kv.Value;
-                _expectedQty.Clear();
+                _expectedQty.Clear(); _expectedQtyPerPanel.Clear();
                 foreach (var kv in freshQty) _expectedQty[kv.Key] = kv.Value;
             }
             Model = product;
@@ -755,7 +763,7 @@ public sealed class SessionCoordinator : IDisposable
             Model = new Product(data.ProductId, data.Name);
             Side = data.Side;
             _expected.Clear();
-            _expectedQty.Clear();
+            _expectedQty.Clear(); _expectedQtyPerPanel.Clear();   // a manual list re-marks its file counts when it is restored
             foreach (var f in data.Expected)
             {
                 if (!IsUsableMachine(f.Machine)) continue;
@@ -1665,6 +1673,7 @@ public sealed class SessionCoordinator : IDisposable
     {
         _expected.Clear();
         _expectedQty.Clear();
+        _expectedQtyPerPanel.Clear();
         List<ModelCacheFeeder>? dbMap = null;
         if (Model is not null) _feederMaps.TryGetValue(MapKey(Model.ProductId, Side ?? "A"), out dbMap);
         if (dbMap is not null)
@@ -1687,13 +1696,14 @@ public sealed class SessionCoordinator : IDisposable
             {
                 _expected[(machine, e.Feeder)] = e.Part;
                 int qty = e.Qty;
+                bool fromFile = qty > 0;   // the file's Mount Step / QTY is PER PANEL (the program mounts the whole panel)
                 if (qty <= 0 && dbMap is not null)
                 {
                     var same = dbMap.FirstOrDefault(f => f.Machine == machine && f.Feeder == e.Feeder && Pvs.Core.Verification.PartNumber.Matches(f.Part, e.Part));
                     var hit = same ?? dbMap.FirstOrDefault(f => Pvs.Core.Verification.PartNumber.Matches(f.Part, e.Part));
-                    qty = hit?.QtyPerUnit ?? 0;
+                    qty = hit?.QtyPerUnit ?? 0;   // DB fallback: per child board
                 }
-                if (qty > 0) _expectedQty[(machine, e.Feeder)] = qty;
+                if (qty > 0) { _expectedQty[(machine, e.Feeder)] = qty; if (fromFile) _expectedQtyPerPanel.Add((machine, e.Feeder)); }
                 else unmatched.Add($"M{machine} F{e.Feeder} {e.Part}");
             }
         }
@@ -1879,7 +1889,7 @@ public sealed class SessionCoordinator : IDisposable
                 // DB mode: the model cache was restored BEFORE the skips were read — drop the skipped machines'
                 // feeders now so a restart doesn't resurrect a checklist the supervisor took out.
                 foreach (var key in _expected.Keys.Where(k => !IsUsableMachine(k.machine)).ToList())
-                { _expected.Remove(key); _expectedQty.Remove(key); }
+                { _expected.Remove(key); _expectedQty.Remove(key); _expectedQtyPerPanel.Remove(key); }
             }
             if (_skippedMachines.Count > 0) _log.LogInformation("Restored {N} skipped machine(s): {M}.", _skippedMachines.Count, string.Join(",", _skippedMachines.OrderBy(m => m)));
         }
@@ -2007,11 +2017,13 @@ public sealed class SessionCoordinator : IDisposable
         // a supervisor's manual pen-drive feeder load (which OVERRIDES the DB map) is honoured here too. _expected
         // is built at model-select from DB-or-manual; _expectedQty holds each feeder's per-board Mount Step.
         var feeders = new List<(int Machine, int Feeder, string Part, int Qty)>();
+        int panelsForMount = _config.PanelBoardsFor(model.Name); if (panelsForMount < 1) panelsForMount = 1;
         lock (_gate)
         {
             if (Model?.ProductId == model.ProductId && string.Equals(Side, side, StringComparison.OrdinalIgnoreCase) && _expected.Count > 0)
+                // Qty here is ALREADY PER PANEL (file counts as-is, DB counts × boards-per-panel) — see PerPanelMount.
                 feeders = _expected.Select(kv => (kv.Key.machine, kv.Key.feeder, kv.Value,
-                    _expectedQty.TryGetValue(kv.Key, out var q) ? q : 0)).ToList();
+                    PerPanelMount(kv.Key, _expectedQty.TryGetValue(kv.Key, out var q) ? q : 0, panelsForMount))).ToList();
         }
         if (feeders.Count == 0) { _log.LogWarning("Inventory baseline skipped — feeder list (_expected) empty for {Model} ({Side}).", model.Name, side); return; }
 
@@ -2029,7 +2041,7 @@ public sealed class SessionCoordinator : IDisposable
         {
             if (!_channels.TryGetValue(f.Machine, out var ch)) continue;
 
-            int perBoard = (f.Qty > 0 ? f.Qty : 1) * panels;   // per-cycle consumption = per-board × panel
+            int perBoard = f.Qty > 0 ? f.Qty : panels;          // per-cycle consumption, already PER PANEL (see above)
             ch.Inventory.Configure(f.Feeder, f.Part, perBoard);
 
             var reel = _reels.Get(f.Machine, f.Feeder);
@@ -2132,6 +2144,7 @@ public sealed class SessionCoordinator : IDisposable
                     Note: $"M{kv.Key} tally seeded up by {target - kv.Value} panels at re-baseline (machine under-reported)", LotNo: _currentLotNo));
             }
         }
+        try { await RebuildMissingReelBasesAsync(ct); } catch (Exception ex) { _log.LogWarning(ex, "Reel-base rebuild failed."); }
         try { ReconcileBalances("re-baseline"); } catch (Exception ex) { _log.LogDebug(ex, "Reconcile after baseline failed."); }
 
         _log.LogInformation("Inventory baselined for {Model} ({Side}), {N} feeder-list feeders; {X} off-list reel(s) auto-unloaded; board tally seeded at {Seed}{Offsets}.", model.Name, side, feeders.Count, extra, seed,
@@ -2207,6 +2220,84 @@ public sealed class SessionCoordinator : IDisposable
         }
         if (adjusted.Count > 0) SyncStockOutsSoon();
         return adjusted.Count;
+    }
+
+    /// <summary>
+    /// A reel loaded BEFORE the reconcile base existed (or one the old build ran to zero) has no LoadQty/LoadClock.
+    /// Rebuild it once from the line's own records: the last completed change/scan that put this UID on this feeder
+    /// gives the quantity confirmed at load and the time; the production-count rows since then give the panels the
+    /// line made; LoadClock = clock now − those panels. The next reconcile then re-derives the balance exactly the
+    /// way Danial states it: loaded qty − list × panels since load. Reels with a base are untouched.
+    /// </summary>
+    private bool _reelBasesRebuilt;
+    private async Task RebuildMissingReelBasesAsync(CancellationToken ct)
+    {
+        // Once per start-up EVERY tracked reel is offered a records-based base (a reel over-charged by the old
+        // build still has a balance, but its stamped base is that wrong balance); afterwards only reels without one.
+        bool all = !_reelBasesRebuilt; _reelBasesRebuilt = true;
+        var todo = new List<(int Machine, int Feeder, string Uid, string Part)>();
+        foreach (var ch in _channels.Values)
+            foreach (var f in ch.Inventory.Feeders)
+                if (f.IsTracked && !string.IsNullOrWhiteSpace(f.ReelUid) && (all || f.LoadQty <= 0))
+                    todo.Add((ch.Machine, f.Feeder, f.ReelUid!, f.PartNumber));
+        if (todo.Count == 0) return;
+        var recDir = System.IO.Path.Combine(AppContext.BaseDirectory, "records");
+        if (!System.IO.Directory.Exists(recDir)) return;
+        var files = System.IO.Directory.GetFiles(recDir, "records-*.jsonl").OrderByDescending(x => x).Take(10).ToList();
+        var found = new Dictionary<(int, int, string), (DateTime At, int Qty)>();
+        foreach (var file in files)
+        {
+            foreach (var line in System.IO.File.ReadLines(file))
+            {
+                if (line.IndexOf("NewReelUid", StringComparison.Ordinal) < 0) continue;
+                VerificationRecord? r;
+                try { r = System.Text.Json.JsonSerializer.Deserialize<VerificationRecord>(line); } catch { continue; }
+                if (r is null || string.IsNullOrWhiteSpace(r.NewReelUid) || r.Quantity is not int q || q <= 0) continue;
+                if (r.Outcome is not ("Completed" or "Released" or "Matched" or "Updated")) continue;
+                foreach (var t in todo)
+                {
+                    if (t.Machine != r.Machine || t.Feeder != r.Feeder || !string.Equals(t.Uid.Trim(), r.NewReelUid.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+                    var key = (t.Machine, t.Feeder, t.Uid);
+                    if (!found.TryGetValue(key, out var prev) || r.At > prev.At) found[key] = (r.At, q);
+                }
+            }
+        }
+        if (found.Count == 0) { _log.LogInformation("Reel-base rebuild: {N} reel(s) without a base, none found in the records.", todo.Count); return; }
+        int perPanel = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1; if (perPanel < 1) perPanel = 1;
+        string lineNo = _config.LineId.ToString();
+        var rowsByDay = new Dictionary<string, IReadOnlyList<ProductionRun>>();
+        long clock = LineClock();
+        foreach (var (key, val) in found)
+        {
+            // panels the line made since the load: sum the production-count rows from the load time to now
+            long boards = 0; bool dbOk = true;
+            for (var day = val.At.Date; day <= DateTime.Today; day = day.AddDays(1))
+            {
+                string dk = day.ToString("yyyy-MM-dd");
+                if (!rowsByDay.TryGetValue(dk, out var rows))
+                {
+                    try { rows = await _repo.GetDailyProductionAsync(lineNo, dk, ct); }
+                    catch { dbOk = false; break; }
+                    rowsByDay[dk] = rows;
+                }
+                foreach (var r in rows)
+                {
+                    if (!DateTime.TryParse(dk + "T" + r.StartTime, out var st)) continue;
+                    if (st >= val.At) boards += r.Quantity;
+                }
+            }
+            if (!dbOk) { _log.LogWarning("Reel-base rebuild: DB unreachable — M{M} F{F} {Uid} left without a base.", key.Item1, key.Item2, key.Item3); continue; }
+            long panelsSince = boards / perPanel;
+            if (_channels.TryGetValue(key.Item1, out var ch) && ch.Inventory.Get(key.Item2) is { } fs && string.Equals(fs.ReelUid?.Trim(), key.Item3.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                ch.Inventory.StampLoad(key.Item2, val.Qty, Math.Max(1, clock - panelsSince));
+                _log.LogWarning("Reel-base rebuilt M{M} F{F} {Part} reel {Uid}: loaded {Qty} at {At:MM-dd HH:mm}, {Panels} panels since (from the production rows) — balance will be re-derived.",
+                    key.Item1, key.Item2, fs.PartNumber, key.Item3, val.Qty, val.At, panelsSince);
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ReelBaseRebuilt", key.Item1, key.Item2, $"loaded {val.Qty} @ {val.At:MM-dd HH:mm}",
+                    NewReelUid: key.Item3, NewReelPart: fs.PartNumber, Quantity: val.Qty, Overridden: true,
+                    Note: $"{panelsSince} panels since load from the production rows; base rebuilt for the reconcile", LotNo: _currentLotNo));
+            }
+        }
     }
 
     /// <summary>Timer body: reconcile, record local remaining, then mirror every reel balance to StockOuts (always on).</summary>
