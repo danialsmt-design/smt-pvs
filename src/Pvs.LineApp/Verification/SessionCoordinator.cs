@@ -69,6 +69,16 @@ public sealed class SessionCoordinator : IDisposable
     // DB auto-load stops overwriting it. Persisted to survive a restart; cleared by Reload-from-DB.
     private readonly Dictionary<int, List<Pvs.Core.Feeders.SonyFeederCsv.Entry>> _manualFeeders = new();
     private readonly Dictionary<int, string> _manualFeederLabels = new();
+    // Danial 2026-09-24: a pen-drive list is used ONLY while the machine runs the program it came from (same model
+    // + side); otherwise that machine falls back to the DB feeder map. Re-evaluated on every model tick.
+    private readonly Dictionary<int, bool> _manualApplies = new();
+    private bool ManualListApplies(int machine)
+    {
+        if (!_manualFeeders.ContainsKey(machine)) return false;
+        string? prog = _channels.TryGetValue(machine, out var ch) ? ch.ProgramName : null;
+        _manualFeederLabels.TryGetValue(machine, out var label);
+        return Pvs.Core.Runtime.ProgramNames.ManualListApplies(prog, label);
+    }
 
     // Machines the SUPERVISOR has taken out of this lot's run (cell bypassed, mounter down). Their feeders are
     // dropped from _expected, so the checklist and the interlock stop asking for parts nobody is loading.
@@ -309,8 +319,27 @@ public sealed class SessionCoordinator : IDisposable
         }
     }
 
+    /// <summary>A machine's program name arrived or changed: does its pen-drive list still apply? If that answer
+    /// changed for any machine, rebuild the expected list and re-baseline the inventory.</summary>
+    private bool RecheckManualListsApply()
+    {
+        bool changed = false;
+        lock (_gate)
+        {
+            foreach (var m in _manualFeeders.Keys.ToList())
+            {
+                bool now = ManualListApplies(m);
+                bool had = _manualApplies.TryGetValue(m, out var prev) ? prev : true;
+                if (now != had) changed = true;
+            }
+            if (changed) RebuildExpectedFromManual();
+        }
+        return changed;
+    }
+
     public async Task AutoDetectModelAsync(CancellationToken ct = default)
     {
+        try { if (RecheckManualListsApply()) await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Manual-list applicability check failed."); }
         try { CheckSilentMachines(); } catch (Exception ex) { _log.LogDebug(ex, "Silent-machine check failed."); }
         try { RecheckDisagreeingPrograms(); } catch (Exception ex) { _log.LogDebug(ex, "Program re-check failed."); }
         if (NonCanon) return;   // parked on a non-Canon model — never auto-pin or verify a Canon model
@@ -1676,10 +1705,25 @@ public sealed class SessionCoordinator : IDisposable
         _expectedQtyPerPanel.Clear();
         List<ModelCacheFeeder>? dbMap = null;
         if (Model is not null) _feederMaps.TryGetValue(MapKey(Model.ProductId, Side ?? "A"), out dbMap);
+        var applies = _manualFeeders.Keys.ToDictionary(m => m, m => ManualListApplies(m));
+        foreach (var kv in applies)
+        {
+            bool had = _manualApplies.TryGetValue(kv.Key, out var prev) ? prev : true;
+            _manualApplies[kv.Key] = kv.Value;
+            if (had && !kv.Value)
+            {
+                string prog = _channels.TryGetValue(kv.Key, out var pch) ? pch.ProgramName ?? "?" : "?";
+                _log.LogWarning("Pen-drive list for M{M} ({Label}) IGNORED: the machine is running {Prog} — using the DB feeder map for this machine (Danial: pen drive only for the program it came from).", kv.Key, _manualFeederLabels.GetValueOrDefault(kv.Key), prog);
+                Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualListIgnored", kv.Key, 0, prog,
+                    Note: $"pen-drive list '{_manualFeederLabels.GetValueOrDefault(kv.Key)}' does not match the running program — DB map used", LotNo: _currentLotNo));
+            }
+            else if (!had && kv.Value)
+                _log.LogInformation("Pen-drive list for M{M} applies again (machine program matches the file).", kv.Key);
+        }
         if (dbMap is not null)
             foreach (var f in dbMap)
             {
-                if (!IsUsableMachine(f.Machine) || _manualFeeders.ContainsKey(f.Machine)) continue;
+                if (!IsUsableMachine(f.Machine) || (_manualFeeders.ContainsKey(f.Machine) && applies[f.Machine])) continue;
                 _expected[(f.Machine, f.Feeder)] = f.Part;
                 if (f.QtyPerUnit > 0) _expectedQty[(f.Machine, f.Feeder)] = f.QtyPerUnit;
             }
@@ -1691,7 +1735,7 @@ public sealed class SessionCoordinator : IDisposable
         var unmatched = new List<string>();
         foreach (var (machine, entries) in _manualFeeders)
         {
-            if (!IsUsableMachine(machine)) continue;
+            if (!IsUsableMachine(machine) || !applies[machine]) continue;   // program mismatch → DB rows above
             foreach (var e in entries)
             {
                 _expected[(machine, e.Feeder)] = e.Part;
@@ -1726,6 +1770,14 @@ public sealed class SessionCoordinator : IDisposable
         int? declared = Pvs.Core.Feeders.SonyFeederCsv.DeclaredCell(csv);
         if (declared is int fm && fm != machine && !force)
             return $"CELL-MISMATCH: that file is for Cell {fm}, not Machine {machine}.";
+        // PROGRAM-MISMATCH (Danial 2026-09-24): a pen-drive list is for the program the machine is RUNNING. If the
+        // machine reports a different model/side, the DB feeder map is the list — refuse unless the supervisor forces.
+        {
+            string? runningProg = _channels.TryGetValue(machine, out var pch) ? pch.ProgramName : null;
+            string? fileLabel = Pvs.Core.Feeders.SonyFeederCsv.Comment(csv);
+            if (!force && !Pvs.Core.Runtime.ProgramNames.ManualListApplies(runningProg, fileLabel))
+                return $"PROGRAM-MISMATCH: Machine {machine} is running '{runningProg}', that file is '{fileLabel}'. PVS keeps the DB feeder list for this machine. (Supervisor force to override.)";
+        }
         // REJECT a file in a format that carries no placement count (Danial 2026-09-07: "reject the different format
         // from the feeder list in the Parts Control PC"). The Sony export has it as Mount Step, the JUKI/Canon export
         // as QTY; anything else would track every feeder at 1 per board. A supervisor may force it (audited), and the
@@ -1833,7 +1885,9 @@ public sealed class SessionCoordinator : IDisposable
                     skipped = _skippedMachines.Contains(n),
                     loaded = _manualFeeders.ContainsKey(n),
                     label = _manualFeederLabels.TryGetValue(n, out var l) ? l : null,
-                    feeders = _manualFeeders.TryGetValue(n, out var e) ? e.Count : 0
+                    feeders = _manualFeeders.TryGetValue(n, out var e) ? e.Count : 0,
+                    applies = _manualFeeders.ContainsKey(n) ? ManualListApplies(n) : (bool?)null,
+                    machineProgram = _channels.TryGetValue(n, out var pch) ? pch.ProgramName : null
                 };
             }).ToList();
             int loadedTotal = _manualFeeders.Where(kv => IsUsableMachine(kv.Key)).Sum(kv => kv.Value.Count);

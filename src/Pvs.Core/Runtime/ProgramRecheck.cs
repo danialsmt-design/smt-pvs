@@ -9,6 +9,31 @@ public static class ProgramNames
         var m = System.Text.RegularExpressions.Regex.Match(program ?? "", @"^\s*([A-Za-z0-9]+)");
         return m.Success ? m.Groups[1].Value.ToUpperInvariant() : "";
     }
+
+    /// <summary>Model + side of a program name OR a pen-drive file label: "L307 - B SIDE _Cell1.PW4" → (L307, B),
+    /// "L311MBu - A SIDE _Cell3" → (L311MBU, A), "L307 B SIDE MC1" → (L307, B). Side defaults to A when the
+    /// text carries no B-side marker. Null when no model token is present.</summary>
+    public static (string Model, string Side)? ModelSideOf(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(text, @"\bL\d{3}[A-Za-z]*", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        bool b = System.Text.RegularExpressions.Regex.IsMatch(text, @"\bB\s*[-_ ]*SIDE|[-_ ]B(?:[-_ ]|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return (m.Value.ToUpperInvariant(), b ? "B" : "A");
+    }
+
+    /// <summary>Danial 2026-09-24: "use the pen drive only if the current running program is from the pen drive,
+    /// otherwise use the DB" — a pen-drive list applies to a machine only while the machine's program is the same
+    /// model AND side as the file. Unknown program (not read yet) → cannot decide → true (re-checked every tick).</summary>
+    public static bool ManualListApplies(string? machineProgram, string? fileLabel)
+    {
+        var mp = ModelSideOf(machineProgram);
+        if (mp is null) return true;                    // program not known yet — keep the list until it is
+        var fl = ModelSideOf(fileLabel);
+        if (fl is null) return true;                    // file carries no model token — nothing to compare
+        return string.Equals(mp.Value.Model, fl.Value.Model, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(mp.Value.Side, fl.Value.Side, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>

@@ -273,6 +273,32 @@ BALANCE RECONCILE
 ```
 
 ### Feeder decrement per board  ▫ to write
+### Pen-drive feeder list — when it applies  🔧draft (built 2026-09-24)
+*Danial: "use the pen drive only if the current running program is from the pen drive, otherwise use from DB."*
+
+```
+PEN-DRIVE LIST APPLIES?
+│
+├─ TRIGGER  a pen-drive list is loaded for a machine · every 3-min model tick · every re-baseline
+│
+├─ GATE  machine program (C3P) known ?
+│     ├─ no  → keep the pen-drive list for now (re-checked when the name arrives)
+│     └─ yes → same MODEL and SIDE as the file's label ?   ("L307 - B SIDE _Cell1" vs "L307 B SIDE MC1")
+│              ├─ yes → pen-drive list is the feeder list for that machine (counts PER PANEL as-is)
+│              └─ no  → that machine uses the DB feeder map (counts per board × panel factor);
+│                        audit ManualListIgnored once; a NEW load for a mismatching program is REFUSED
+│                        (PROGRAM-MISMATCH) unless the supervisor forces it
+│
+├─ INVARIANTS
+│     • a pen-drive list never outlives the program it came from
+│     • the decision is per machine (a reshuffled cell can be on the pen drive while the rest use the DB)
+│     • nothing is deleted: the list stays loaded and applies again if the machine returns to that program
+│
+├─ OUTPUT  /api/feeders/manual/status → applies + machineProgram per machine · log · audit
+│
+└─ REVERSE  Reload-from-DB drops the lists; loading the matching program's file re-applies
+```
+
 ### Parts-out retire (consume)  ▫ to write
 ### StockOut sync  ▫ to write
 ### Program-mismatch alarm (+ re-ask before believing it)  🔧draft (built 2026-09-21)
