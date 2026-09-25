@@ -342,9 +342,24 @@ public sealed class SessionCoordinator : IDisposable
         return changed;
     }
 
+    private bool _masterFillTried;
     public async Task AutoDetectModelAsync(CancellationToken ct = default)
     {
         try { if (RecheckManualListsApply()) await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Manual-list applicability check failed."); }
+        // FEEDER MASTER first fill: the running model has no block (fresh install / model restored from cache at
+        // start-up). A LIVE feeder-list read imports it with the right units; try once, then rely on the next change.
+        try
+        {
+            Product? m; string side; bool need;
+            lock (_gate) { m = Model; side = string.IsNullOrWhiteSpace(Side) ? "A" : Side; need = m is not null && _master.Get(m.Name, side) is null && _manualFeeders.Count == 0; }
+            if (need && !_masterFillTried && !NonCanon)
+            {
+                _masterFillTried = true;
+                _log.LogInformation("Feeder Master: no block for {Model} {Side} — reading the feeder list live to fill it.", m!.Name, side);
+                await SelectModelAsync(m.ProductId, side, ct);
+            }
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "Feeder Master first fill failed."); }
         try { CheckSilentMachines(); } catch (Exception ex) { _log.LogDebug(ex, "Silent-machine check failed."); }
         try { RecheckDisagreeingPrograms(); } catch (Exception ex) { _log.LogDebug(ex, "Program re-check failed."); }
         if (NonCanon) return;   // parked on a non-Canon model — never auto-pin or verify a Canon model
