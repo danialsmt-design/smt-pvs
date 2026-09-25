@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Feeder Master — PVS</title>
+<style>
+  :root{--bg:#0C110F;--pan:#141C18;--pan2:#1B251F;--pan3:#243128;--ln:#293A31;--ln2:#37493E;--ink:#EAF1EC;--mut:#8EA398;--mut2:#6E8377;
+        --acc:#E3A63C;--acc2:#F0B95A;--ok:#54BD7F;--red:#E36B60;--amber:#E0A93B;--rad:14px}
+  *{box-sizing:border-box}
+  body{margin:0;color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,Calibri,Arial,sans-serif;font-feature-settings:"tnum" 1;background:var(--bg)}
+  header{position:sticky;top:0;z-index:40;padding:12px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:rgba(12,17,15,.92);border-bottom:1px solid var(--ln)}
+  header h1{font-size:17px;margin:0;font-weight:700}
+  .nav{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .nav a{color:var(--mut);text-decoration:none;font-size:14px;padding:6px 12px;border:1px solid var(--ln);border-radius:999px}
+  main{padding:18px 22px;max-width:1200px;margin:0 auto}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:var(--rad);padding:16px 18px;margin-bottom:16px}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  select,input{font:inherit;color:var(--ink);background:var(--pan2);border:1px solid var(--ln2);border-radius:8px;padding:6px 10px}
+  input.num{width:84px;text-align:right}
+  input.part{width:170px;text-transform:uppercase}
+  button{font:inherit;color:var(--ink);background:var(--pan3);border:1px solid var(--ln2);border-radius:9px;padding:7px 14px;cursor:pointer}
+  button.pri{background:var(--acc);color:#1a1408;border-color:var(--acc);font-weight:700}
+  button.danger{border-color:var(--red);color:var(--red)}
+  .tabs{display:flex;gap:6px;margin:10px 0}
+  .tab{padding:8px 16px;border:1px solid var(--ln2);border-bottom:none;border-radius:10px 10px 0 0;cursor:pointer;background:var(--pan2);color:var(--mut)}
+  .tab.on{background:var(--pan3);color:var(--ink);font-weight:700}
+  .tab .tot{font-size:12px;color:var(--mut2);margin-left:6px}
+  table{width:100%;border-collapse:collapse;font-size:15px}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--ln);text-align:left}
+  th{color:var(--mut);font-weight:600;font-size:13px}
+  td.n,th.n{text-align:right}
+  tfoot td{font-weight:700;border-top:2px solid var(--ln2)}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:700}
+  .ok{background:rgba(84,189,127,.15);color:var(--ok)} .warn{background:rgba(224,169,59,.15);color:var(--amber)} .bad{background:rgba(227,107,96,.15);color:var(--red)}
+  .totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:10px}
+  .kpi{background:var(--pan2);border:1px solid var(--ln);border-radius:10px;padding:10px 12px}
+  .kpi .v{font-size:22px;font-weight:800} .kpi .l{font-size:12px;color:var(--mut)}
+  #msg{min-height:20px;margin-top:8px;font-size:14px}
+  .dirty{outline:2px solid var(--amber)}
+  .hint{color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>📋 Feeder Master</h1>
+  <span id="lineName" class="hint"></span>
+  <div class="nav"><a href="/verify.html">Verify</a><a href="/setup.html">Model &amp; lot</a><a href="/">Monitor</a></div>
+</header>
+<main>
+  <div class="card">
+    <div class="row">
+      <label>Model <select id="modelSel" onchange="pickModel()"></select></label>
+      <label>Side <select id="sideSel" onchange="pickModel()"><option>A</option><option>B</option></select></label>
+      <label>Boards per panel <input id="bpp" class="num" type="number" min="1" max="20" oninput="recalc(true)"></label>
+      <span id="status"></span>
+      <span style="margin-left:auto" class="row">
+        <button onclick="importDb(false)" title="Show what the DB feeder map would change, row by row">Preview DB import</button>
+        <button onclick="importDb(true)" title="Replace this block with the DB feeder map (supervisor badge)">Import from DB</button>
+        <button class="pri" onclick="save()" title="Save this block as the master for the reel count-down (supervisor badge)">💾 Save (badge)</button>
+      </span>
+    </div>
+    <div id="msg"></div>
+    <div class="hint">Shots are per <b>board</b>, whole numbers only. Per panel = shots × boards per panel. This table is the only source the reel count-down uses.</div>
+  </div>
+
+  <div class="card">
+    <div class="tabs" id="tabs"></div>
+    <table id="grid"><thead><tr><th>Feeder</th><th>Part number</th><th class="n">Shots / board</th><th class="n">Shots / panel</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+      <tfoot><tr><td colspan="2" id="mcLabel">Machine total</td><td class="n" id="mcBoard">0</td><td class="n" id="mcPanel">0</td><td><button onclick="addRow()">+ feeder</button></td></tr></tfoot>
+    </table>
+    <div class="totals">
+      <div class="kpi"><div class="v" id="t1b">0</div><div class="l">MC1 shots/board · <span id="t1p">0</span>/panel</div></div>
+      <div class="kpi"><div class="v" id="t2b">0</div><div class="l">MC2 shots/board · <span id="t2p">0</span>/panel</div></div>
+      <div class="kpi"><div class="v" id="t3b">0</div><div class="l">MC3 shots/board · <span id="t3p">0</span>/panel</div></div>
+      <div class="kpi"><div class="v" id="t4b">0</div><div class="l">MC4 shots/board · <span id="t4p">0</span>/panel</div></div>
+      <div class="kpi" style="border-color:var(--acc)"><div class="v" id="tlb">0</div><div class="l">LINE total shots/board · <span id="tlp">0</span>/panel</div></div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let master = null, block = null, tab = 1, dirty = false, current = {model:null, side:'A'};
+async function api(path, body){ const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return r.json(); }
+
+async function load(){
+  master = await (await fetch('/api/master')).json();
+  current = { model: master.current.model, side: (master.current.side||'A').toUpperCase() };
+  const names = [...new Set(master.blocks.map(b=>b.Model))];
+  if(current.model && !names.includes(current.model)) names.unshift(current.model);
+  try { const st = await (await fetch('/api/status')).json(); $('lineName').textContent = st.line || ''; } catch(e){}
+  $('modelSel').innerHTML = names.map(n=>`<option ${n===current.model?'selected':''}>${n}</option>`).join('');
+  if(current.model) $('sideSel').value = current.side;
+  await pickModel();
+}
+async function pickModel(){
+  if(dirty && !confirm('Discard unsaved changes on this block?')) return;
+  const model = $('modelSel').value, side = $('sideSel').value;
+  const b = await (await fetch(`/api/master/block?model=${encodeURIComponent(model)}&side=${side}`)).json();
+  if(!b.found){
+    block = { Model: model, Side: side, BoardsPerPanel: 4, machines: [1,2,3,4].map(m=>({machine:m, feeders:[]})), Reviewed:false, Source:'new', Version:0 };
+    $('status').innerHTML = '<span class="pill bad">NOT IN MASTER</span> <span class="hint">this model/side has no block — fill it or import from DB</span>';
+  } else {
+    block = b;
+    const inForce = (model===current.model && side===current.side);
+    $('status').innerHTML = (b.Reviewed ? '<span class="pill ok">REVIEWED</span>' : '<span class="pill warn">UNREVIEWED — imported from '+b.Source+'</span>')
+      + (inForce ? ' <span class="pill ok">IN FORCE (running model)</span>' : '')
+      + ` <span class="hint">v${b.Version} · ${b.UpdatedBy||''} · ${b.UpdatedAt? new Date(b.UpdatedAt).toLocaleString():''}</span>`;
+  }
+  $('bpp').value = block.BoardsPerPanel;
+  dirty = false; tab = 1; render();
+}
+function render(){
+  const bpp = Math.max(1, +$('bpp').value||1);
+  $('tabs').innerHTML = block.machines.map(m=>`<div class="tab ${m.machine===tab?'on':''}" onclick="tab=${m.machine};render()">MC${m.machine}<span class="tot">${m.feeders.length} feeders · ${sumB(m)}/board</span></div>`).join('');
+  const m = block.machines.find(x=>x.machine===tab);
+  $('rows').innerHTML = m.feeders.map((f,i)=>`<tr>
+    <td><input class="num" type="number" min="1" value="${f.Feeder}" oninput="setF(${i},'Feeder',this.value)"></td>
+    <td><input class="part" value="${f.Part||''}" oninput="setF(${i},'Part',this.value)"></td>
+    <td class="n"><input class="num" type="number" min="1" step="1" value="${f.ShotsPerBoard}" oninput="setF(${i},'ShotsPerBoard',this.value)"></td>
+    <td class="n">${(+f.ShotsPerBoard||0)*bpp}</td>
+    <td><button class="danger" onclick="delRow(${i})" title="remove feeder">✕</button></td></tr>`).join('');
+  $('mcLabel').textContent = `MC${tab} total (${m.feeders.length} feeders)`;
+  $('mcBoard').textContent = sumB(m); $('mcPanel').textContent = sumB(m)*bpp;
+  let lb = 0;
+  for(const mm of block.machines){ const b = sumB(mm); lb += b; $('t'+mm.machine+'b').textContent = b; $('t'+mm.machine+'p').textContent = b*bpp; }
+  $('tlb').textContent = lb; $('tlp').textContent = lb*bpp;
+  document.querySelectorAll('.kpi').forEach(k=>k.classList.toggle('dirty', dirty));
+}
+function sumB(m){ return m.feeders.reduce((a,f)=>a+(parseInt(f.ShotsPerBoard)||0),0); }
+function setF(i,k,v){ const m = block.machines.find(x=>x.machine===tab); m.feeders[i][k] = (k==='Part')? v.toUpperCase() : parseInt(v)||0; dirty = true; render(); }
+function addRow(){ const m = block.machines.find(x=>x.machine===tab); m.feeders.push({Feeder: (m.feeders.length? Math.max(...m.feeders.map(f=>+f.Feeder))+1 : 101), Part:'', ShotsPerBoard:1}); dirty = true; render(); }
+function delRow(i){ const m = block.machines.find(x=>x.machine===tab); m.feeders.splice(i,1); dirty = true; render(); }
+function recalc(markDirty){ if(markDirty) dirty = true; render(); }
+function badgeOr(msg){ const b = prompt('SUPERVISOR: scan your badge to ' + msg); return b && b.trim() ? b.trim() : null; }
+async function save(){
+  const bad = [];
+  for(const m of block.machines) for(const f of m.feeders){ if(!(+f.ShotsPerBoard>=1) || (+f.ShotsPerBoard)%1!==0) bad.push(`MC${m.machine} F${f.Feeder}`); if(!f.Part) bad.push(`MC${m.machine} F${f.Feeder} part`); }
+  if(bad.length){ $('msg').innerHTML = '<span class="pill bad">NOT SAVED</span> whole-number shots ≥ 1 and a part are required: ' + bad.slice(0,6).join(', '); return; }
+  const badge = badgeOr(`save the Feeder Master for ${$('modelSel').value} ${$('sideSel').value}`); if(!badge) return;
+  const machines = {}; for(const m of block.machines) machines[m.machine] = m.feeders.map(f=>({feeder:+f.Feeder, part:f.Part, shotsPerBoard:+f.ShotsPerBoard}));
+  const r = await api('/api/master/save', { badge, model: $('modelSel').value, side: $('sideSel').value, boardsPerPanel: +$('bpp').value, machines });
+  $('msg').textContent = r.message || JSON.stringify(r);
+  if(/saved/i.test(r.message||'')){ dirty = false; await load(); }
+}
+async function importDb(apply){
+  const badge = badgeOr((apply?'IMPORT the DB feeder map into':'preview the DB feeder map against') + ` the Feeder Master for ${$('modelSel').value} ${$('sideSel').value}`); if(!badge) return;
+  const r = await api('/api/master/import', { badge, model: $('modelSel').value, side: $('sideSel').value, apply });
+  $('msg').innerHTML = `<b>${r.message||''}</b>` + (r.changes && r.changes.length ? '<br>' + r.changes.slice(0,40).map(c=>'• '+c).join('<br>') : '');
+  if(apply && r.ok){ dirty = false; await load(); }
+}
+load();
+</script>
+</body>
+</html>

@@ -90,6 +90,11 @@ public sealed class SessionCoordinator : IDisposable
     // panel factor again charged L1 64/panel for a 16/panel feeder from 2026-09-22 (every reel ran to zero at a
     // quarter of its life; L3 at 6×). The DB feeder map (QtyPerUnit) stays per child board (validated by C1Z 09-17).
     private readonly HashSet<(int machine, int feeder)> _expectedQtyPerPanel = new();
+    // FEEDER MASTER (Danial 2026-09-25): the ONLY source the count-down reads. Shots per board per feeder per machine
+    // per model+side, edited on master.html by a supervisor. The DB map / a pen-drive file only FILL a block.
+    private readonly Pvs.LineApp.Inventory.FeederMasterStore _master =
+        new(System.IO.Path.Combine(AppContext.BaseDirectory, "feeder-master.json"));
+    private string _masterNote = "";   // shown on the pages: which block is in force, or why none is
     /// <summary>Placements per PANEL for a feeder: a file count as-is, a DB count × boards-per-panel.</summary>
     private int PerPanelMount((int machine, int feeder) key, int qty, int panels) =>
         _expectedQtyPerPanel.Contains(key) ? Math.Max(1, qty) : (qty > 0 ? qty : 1) * Math.Max(1, panels);
@@ -594,6 +599,7 @@ public sealed class SessionCoordinator : IDisposable
             // MANUAL MODE: the pen-drive rows take their placement counts from this (now fresh) DB map — rebuild so
             // a list restored at startup from an older cache (counts 0) picks the real counts up on the first DB read.
             if (_manualFeeders.Count > 0) RebuildExpectedFromManual();
+            else { try { ApplyMasterLocked("model select"); } catch (Exception ex) { _log.LogWarning(ex, "Feeder Master apply (model select) failed."); } }
             SaveModelCache();      // remember the model + feeder map so a restart isn't stuck with no model
             SaveFeederMapCache();  // persist the per-model feeder map for offline model selection
             // If a check is in progress, refresh ITS checklist from the updated map (mid-check ProductBOM amendment)
@@ -799,6 +805,7 @@ public sealed class SessionCoordinator : IDisposable
                 _expected[(f.Machine, f.Feeder)] = f.Part;
                 if (f.QtyPerUnit > 0) _expectedQty[(f.Machine, f.Feeder)] = f.QtyPerUnit;
             }
+            try { ApplyMasterLocked("startup"); } catch (Exception ex) { _log.LogWarning(ex, "Feeder Master apply (startup) failed."); }
             _log.LogInformation("Restored cached model {Model} ({Side}), {N} feeders — before serial/DB auto-detect.", data.Name, data.Side, _expected.Count);
         }
         catch (Exception ex) { _log.LogDebug(ex, "Model cache load failed."); }
@@ -1698,6 +1705,130 @@ public sealed class SessionCoordinator : IDisposable
     /// that starved the live inventory of every other machine and, with off-list auto-unload, would have taken
     /// their reels off the feeders. (Audit finding H3, 2026-09-07.) A machine the supervisor has SKIPPED
     /// contributes nothing either way.</summary>
+    // ---- FEEDER MASTER --------------------------------------------------------------------------------------
+    /// <summary>
+    /// Make the master the feeder list in force for the current model + side. Called after every path that builds
+    /// _expected from the DB map or a pen-drive file (those become IMPORT sources). If the master has no block for
+    /// this model + side yet, the current list is imported into a new UNREVIEWED block first (so the line is never
+    /// blind); a pen-drive count (per panel) is converted to shots per board and must divide exactly.
+    /// Must be called under _gate.
+    /// </summary>
+    private void ApplyMasterLocked(string reason)
+    {
+        if (Model is null) return;
+        string model = Model.Name, side = string.IsNullOrWhiteSpace(Side) ? "A" : Side;
+        var block = _master.Get(model, side);
+        if (block is null)
+        {
+            block = ImportCurrentListLocked(model, side, "auto");
+            if (block is null) { _masterNote = $"{model} {side}: NOT in the Feeder Master and nothing to import — no feeders tracked"; _log.LogWarning("Feeder Master: {Note}", _masterNote); return; }
+            _log.LogWarning("Feeder Master: {Model} {Side} had no block — imported the current list ({N} feeders, source {Src}) as UNREVIEWED; a supervisor should review it on master.html.", model, side, block.FeederCount, block.Source);
+            Audit(new VerificationRecord(DateTime.Now, _config.LineName, "FeederMasterImported", 0, 0, $"{model} {side}",
+                Note: $"{block.FeederCount} feeders imported from {block.Source} ({reason}); unreviewed", LotNo: _currentLotNo));
+        }
+        _expected.Clear(); _expectedQty.Clear(); _expectedQtyPerPanel.Clear();
+        foreach (var (machine, list) in block.Machines)
+        {
+            if (!IsUsableMachine(machine)) continue;
+            foreach (var f in list)
+            {
+                _expected[(machine, f.Feeder)] = f.Part;
+                _expectedQty[(machine, f.Feeder)] = f.ShotsPerBoard;   // per BOARD; the baseline × BoardsPerPanel
+            }
+        }
+        _config.PanelBoards[model] = block.BoardsPerPanel;   // the master owns the panel factor too
+        _masterNote = $"{model} {side}: Feeder Master v{block.Version} ({block.FeederCount} feeders, {block.TotalShotsPerBoard} shots/board, {block.BoardsPerPanel} boards/panel){(block.Reviewed ? "" : " — UNREVIEWED")}";
+    }
+
+    /// <summary>Build a block from the list currently in _expected/_expectedQty (DB or pen-drive), converting
+    /// pen-drive per-panel counts to shots per board. Returns null when nothing is there. Under _gate.</summary>
+    private Pvs.Core.Feeders.MasterBlock? ImportCurrentListLocked(string model, string side, string by)
+    {
+        if (_expected.Count == 0) return null;
+        int bpp = _config.PanelBoardsFor(model); if (bpp < 1) bpp = 1;
+        var machines = new Dictionary<int, List<Pvs.Core.Feeders.MasterFeeder>>();
+        var bad = new List<string>();
+        bool anyPen = false;
+        foreach (var kv in _expected.OrderBy(k => k.Key.machine).ThenBy(k => k.Key.feeder))
+        {
+            int qty = _expectedQty.TryGetValue(kv.Key, out var q) ? q : 0;
+            int shots;
+            if (_expectedQtyPerPanel.Contains(kv.Key))
+            {
+                anyPen = true;
+                var s2 = Pvs.Core.Feeders.FeederMasterRules.ShotsPerBoardFromPanelCount(qty, bpp);
+                if (s2 is null) { bad.Add($"M{kv.Key.machine} F{kv.Key.feeder} {kv.Value}: {qty}/panel does not divide by {bpp}"); shots = Math.Max(1, (int)Math.Ceiling(qty / (double)bpp)); }
+                else shots = s2.Value;
+            }
+            else shots = Math.Max(1, qty);
+            machines.TryAdd(kv.Key.machine, new List<Pvs.Core.Feeders.MasterFeeder>());
+            machines[kv.Key.machine].Add(new Pvs.Core.Feeders.MasterFeeder(kv.Key.feeder, kv.Value, shots));
+        }
+        if (bad.Count > 0)
+            _log.LogWarning("Feeder Master import {Model} {Side}: {N} pen-drive count(s) do not divide by {Bpp} boards/panel — is the panel factor right? {List}", model, side, bad.Count, bpp, string.Join("; ", bad));
+        var block = new Pvs.Core.Feeders.MasterBlock(model, side.ToUpperInvariant(), bpp, machines, anyPen ? "pendrive" : "db", false, DateTime.Now, by, 0);
+        return _master.Upsert(block, by, block.Source, reviewed: false);
+    }
+
+    public Pvs.Core.Feeders.MasterBlock? MasterBlockFor(string model, string side) => _master.Get(model, side);
+    public IReadOnlyList<Pvs.Core.Feeders.MasterBlock> MasterBlocks() => _master.All();
+    public string MasterNote { get { lock (_gate) return _masterNote; } }
+
+    /// <summary>Supervisor saves an edited block: validate, persist (history kept), apply if it is the running
+    /// model + side, re-baseline + reconcile. Returns a message.</summary>
+    public async Task<string> SaveMasterBlockAsync(Pvs.Core.Feeders.MasterBlock block, Badge badge, CancellationToken ct = default)
+    {
+        if (!badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to change the Feeder Master.";
+        var errs = Pvs.Core.Feeders.FeederMasterRules.Validate(block);
+        if (errs.Count > 0) return "NOT SAVED: " + string.Join("; ", errs);
+        var prev = _master.Get(block.Model, block.Side);
+        var diff = Pvs.Core.Feeders.FeederMasterRules.Diff(prev, block);
+        var saved = _master.Upsert(block, badge.Name, "edited", reviewed: true);
+        bool inForce;
+        lock (_gate)
+        {
+            inForce = Model is not null && string.Equals(Model.Name, saved.Model, StringComparison.OrdinalIgnoreCase)
+                      && string.Equals(string.IsNullOrWhiteSpace(Side) ? "A" : Side, saved.Side, StringComparison.OrdinalIgnoreCase);
+            if (inForce) ApplyMasterLocked("master saved");
+        }
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "FeederMasterSaved", 0, 0, $"{saved.Model} {saved.Side} v{saved.Version}",
+            Supervisor: badge.Name, Overridden: true,
+            Note: $"{saved.FeederCount} feeders, {saved.TotalShotsPerBoard} shots/board, {saved.BoardsPerPanel} boards/panel; {diff.Count} change(s): {string.Join("; ", diff.Take(12))}", LotNo: _currentLotNo));
+        _log.LogWarning("Feeder Master {Model} {Side} v{V} saved by {By}: {N} change(s).", saved.Model, saved.Side, saved.Version, badge.Name, diff.Count);
+        if (inForce)
+        {
+            try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Refresh after master save failed."); }
+            try { ReconcileBalances("feeder master changed"); } catch (Exception ex) { _log.LogDebug(ex, "Reconcile after master save failed."); }
+        }
+        return $"Feeder Master {saved.Model} {saved.Side} v{saved.Version} saved by {badge.Name} — {diff.Count} change(s){(inForce ? "; in force now" : "")}.";
+    }
+
+    /// <summary>Re-import a model + side from the DB feeder map into the master (supervisor). apply=false returns
+    /// the row-by-row preview only.</summary>
+    public async Task<(bool Ok, string Message, IReadOnlyList<string> Changes)> ImportMasterFromDbAsync(string model, string side, Badge badge, bool apply, CancellationToken ct = default)
+    {
+        if (!badge.CanReleaseInterlock) return (false, "Scan a SUPERVISOR badge (L2+) to import into the Feeder Master.", Array.Empty<string>());
+        var products = await GetModelsAsync(ct);
+        var product = products.FirstOrDefault(pr => string.Equals(pr.Name, model, StringComparison.OrdinalIgnoreCase));
+        if (product is null) return (false, $"Model {model} not found in the DB.", Array.Empty<string>());
+        var map = await TryReadFeederMapAsync(product.ProductId, side, 8, ct);
+        if (map is null) return (false, "DB unreachable — nothing imported.", Array.Empty<string>());
+        int bpp = _master.Get(model, side)?.BoardsPerPanel ?? Math.Max(1, _config.PanelBoardsFor(model));
+        var machines = new Dictionary<int, List<Pvs.Core.Feeders.MasterFeeder>>();
+        foreach (var f in map.Where(f => f.Position.IsAssigned && f.Machine > 0 && f.Position.Number is int))
+        {
+            machines.TryAdd(f.Machine, new List<Pvs.Core.Feeders.MasterFeeder>());
+            machines[f.Machine].Add(new Pvs.Core.Feeders.MasterFeeder(f.Position.Number!.Value, f.PartNumber, Math.Max(1, f.QtyPerUnit)));
+        }
+        var incoming = new Pvs.Core.Feeders.MasterBlock(model, side.ToUpperInvariant(), bpp, machines, "db", false, DateTime.Now, badge.Name, 0);
+        var errs = Pvs.Core.Feeders.FeederMasterRules.Validate(incoming);
+        if (errs.Count > 0) return (false, "DB map not usable: " + string.Join("; ", errs), Array.Empty<string>());
+        var diff = Pvs.Core.Feeders.FeederMasterRules.Diff(_master.Get(model, side), incoming);
+        if (!apply) return (true, $"{diff.Count} change(s) — preview only.", diff);
+        var msg = await SaveMasterBlockAsync(incoming, badge, ct);
+        return (true, msg, diff);
+    }
+
     private void RebuildExpectedFromManual()
     {
         _expected.Clear();
@@ -1751,6 +1882,7 @@ public sealed class SessionCoordinator : IDisposable
                 else unmatched.Add($"M{machine} F{e.Feeder} {e.Part}");
             }
         }
+        try { ApplyMasterLocked("manual list"); } catch (Exception ex) { _log.LogWarning(ex, "Feeder Master apply (manual) failed."); }
         if (unmatched.Count > 0)
             _log.LogWarning("Manual feeder list: NO placement count for {N} feeder(s) (not in the file, not in the DB feeder map) — decrementing at 1 per board: {List}",
                 unmatched.Count, string.Join(", ", unmatched));

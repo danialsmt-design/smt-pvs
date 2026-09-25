@@ -1106,6 +1106,52 @@ app.MapGet("/api/shortage", async (Pvs.LineApp.Runtime.ShortageMonitorService mo
 
 // ---- verification API (Stage 2) ----
 
+// ---- FEEDER MASTER (Danial 2026-09-25: the only source for the reel count-down) ----
+app.MapGet("/api/master", (LineService line) =>
+{
+    var co = line.Coordinator;
+    return Results.Ok(new
+    {
+        current = new { model = co?.Model?.Name, side = co?.Side, note = co?.MasterNote },
+        blocks = (co?.MasterBlocks() ?? Array.Empty<Pvs.Core.Feeders.MasterBlock>()).Select(b => new
+        {
+            b.Model, b.Side, b.BoardsPerPanel, b.Source, b.Reviewed, b.UpdatedAt, b.UpdatedBy, b.Version,
+            feeders = b.FeederCount, shotsPerBoard = b.TotalShotsPerBoard, shotsPerPanel = b.TotalShotsPerPanel,
+            machines = Enumerable.Range(1, 4).Select(m => new { machine = m, feeders = b.Machines.TryGetValue(m, out var l) ? l.Count : 0, shotsPerBoard = b.MachineShotsPerBoard(m), shotsPerPanel = b.MachineShotsPerPanel(m) })
+        })
+    });
+});
+app.MapGet("/api/master/block", (LineService line, string model, string? side) =>
+{
+    var b = line.Coordinator?.MasterBlockFor(model, side ?? "A");
+    if (b is null) return Results.Ok(new { found = false, model, side = side ?? "A" });
+    return Results.Ok(new
+    {
+        found = true, b.Model, b.Side, b.BoardsPerPanel, b.Source, b.Reviewed, b.UpdatedAt, b.UpdatedBy, b.Version,
+        machines = Enumerable.Range(1, 4).Select(m => new
+        {
+            machine = m,
+            feeders = (b.Machines.TryGetValue(m, out var l) ? l : new List<Pvs.Core.Feeders.MasterFeeder>()).OrderBy(f => f.Feeder).Select(f => new { f.Feeder, f.Part, f.ShotsPerBoard }),
+            shotsPerBoard = b.MachineShotsPerBoard(m), shotsPerPanel = b.MachineShotsPerPanel(m)
+        }),
+        shotsPerBoard = b.TotalShotsPerBoard, shotsPerPanel = b.TotalShotsPerPanel
+    });
+});
+app.MapPost("/api/master/save", async (LineService line, IReelPartRepository repo, MasterSaveReq req) =>
+{
+    var badge = await repo.FindBadgeAsync(req.Badge ?? "") ?? new Pvs.Core.People.Badge("?", req.Badge ?? "", "");
+    var machines = (req.Machines ?? new()).ToDictionary(kv => int.Parse(kv.Key),
+        kv => kv.Value.Select(r => new Pvs.Core.Feeders.MasterFeeder(r.Feeder, (r.Part ?? "").Trim(), r.ShotsPerBoard)).ToList());
+    var block = new Pvs.Core.Feeders.MasterBlock(req.Model ?? "", (req.Side ?? "A").ToUpperInvariant(), req.BoardsPerPanel, machines, "edited", true, DateTime.Now, badge.Name, 0);
+    return Results.Ok(new { message = await line.Coordinator!.SaveMasterBlockAsync(block, badge) });
+});
+app.MapPost("/api/master/import", async (LineService line, IReelPartRepository repo, MasterImportReq req) =>
+{
+    var badge = await repo.FindBadgeAsync(req.Badge ?? "") ?? new Pvs.Core.People.Badge("?", req.Badge ?? "", "");
+    var (ok, message, changes) = await line.Coordinator!.ImportMasterFromDbAsync(req.Model ?? "", req.Side ?? "A", badge, req.Apply);
+    return Results.Ok(new { ok, message, changes });
+});
+
 app.MapGet("/api/models", async (LineService line) =>
 {
     var products = await line.Coordinator!.GetModelsAsync();
@@ -1817,6 +1863,9 @@ record StopReasonReq(string? Reason = null, string? Note = null);
 record SendMailReq(string? Key, string[]? To, string? Subject, string? Body);
 record RobotReq(string? By, string? Reason);
 record ShutdownReq(string Password = "");
+record MasterRowReq(int Feeder, string? Part, int ShotsPerBoard);
+record MasterSaveReq(string? Badge, string? Model, string? Side, int BoardsPerPanel, Dictionary<string, List<MasterRowReq>>? Machines);
+record MasterImportReq(string? Badge, string? Model, string? Side, bool Apply = false);
 record MachineReq(int Machine);
 record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);
 record ModelReq(int ProductId, string Side);

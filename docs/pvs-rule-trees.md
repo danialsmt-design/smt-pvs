@@ -273,6 +273,38 @@ BALANCE RECONCILE
 ```
 
 ### Feeder decrement per board  ▫ to write
+### Feeder Master — the only source for the reel count-down  🔧draft (built 2026-09-25)
+*Danial: "a table per model — MC1..MC4, total mount shots per board and per panel — editable, a settings page in each
+line's PVS; this is the master for the reel count-down, no other source is allowed."*
+
+```
+FEEDER MASTER
+│
+├─ WHAT  per line: one block per MODEL + SIDE → boards/panel + per machine (MC1..MC4) rows {feeder, part, shots/board}
+│        shots are PER BOARD, whole numbers; per panel = shots × boards/panel (derived, never typed)
+│
+├─ IN FORCE  the block whose model + side = the running model + side. Every list consumer (count-down, forecast,
+│            checklist, lot-end check, DPC boards/panel) reads it and nothing else.
+│
+├─ FILL  (a) supervisor edits on master.html (badge) — validated, versioned, history kept, audited FeederMasterSaved
+│        (b) "Import from DB" (badge): preview row-by-row diff → apply
+│        (c) AUTO: a model + side with no block yet gets the current list imported as UNREVIEWED (pen-drive counts
+│            ÷ boards/panel, must divide — else flagged) so the line is never blind; shown as UNREVIEWED until saved
+│
+├─ ACTION on save/import (running model)  rebuild list → re-baseline inventory → balance reconcile → StockOut sync
+│
+├─ INVARIANTS
+│     • no fraction of a shot (26.5/board = the panel factor is wrong, not the part)
+│     • the DB map / pen drive never feed the count-down directly again
+│     • the previous version is kept (feeder-master-history.jsonl) — any save is reversible
+│
+├─ MUST NOT  ✗ learn/adjust shots from exhausts   ✗ silently change a block   ✗ track a model with no block
+│
+├─ OUTPUT  master.html (dropdown model, tab per machine, opens on the running model) · /api/master · audits
+│
+└─ REVERSE  re-save the previous version from history (supervisor)
+```
+
 ### Pen-drive feeder list — when it applies  🔧draft (built 2026-09-24)
 *Danial: "use the pen drive only if the current running program is from the pen drive, otherwise use from DB."*
 
