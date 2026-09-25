@@ -1806,7 +1806,7 @@ public sealed class SessionCoordinator : IDisposable
                 return;
             }
             block = ImportCurrentListLocked(model, side, "auto");
-            if (block is null) { _masterNote = $"{model} {side}: NOT in the Feeder Master and nothing to import — no feeders tracked"; _log.LogWarning("Feeder Master: {Note}", _masterNote); return; }
+            if (block is null) { _masterNote = $"{model} {side}: NOT in the Feeder Master — nothing tracked. Import the pen-drive CSV per machine on master.html (or add feeders by hand); the DB map is not allowed"; _log.LogWarning("Feeder Master: {Note}", _masterNote); return; }
             _log.LogWarning("Feeder Master: {Model} {Side} had no block — imported the current list ({N} feeders, source {Src}) as UNREVIEWED; a supervisor should review it on master.html.", model, side, block.FeederCount, block.Source);
             Audit(new VerificationRecord(DateTime.Now, _config.LineName, "FeederMasterImported", 0, 0, $"{model} {side}",
                 Note: $"{block.FeederCount} feeders imported from {block.Source} ({reason}); unreviewed", LotNo: _currentLotNo));
@@ -1827,9 +1827,15 @@ public sealed class SessionCoordinator : IDisposable
 
     /// <summary>Build a block from the list currently in _expected/_expectedQty (DB or pen-drive), converting
     /// pen-drive per-panel counts to shots per board. Returns null when nothing is there. Under _gate.</summary>
+    /// <summary>Compile-time switch: the DB feeder map may NOT fill or refresh a Feeder Master block (Danial 2026-09-25).
+    /// A block is created only from a pen-drive CSV import (master.html / ⚙ page) or by hand on master.html.</summary>
+    private const bool DbImportEnabled = false;
+
     private Pvs.Core.Feeders.MasterBlock? ImportCurrentListLocked(string model, string side, string by)
     {
         if (_expected.Count == 0) return null;
+        // A DB-built list (no per-panel pen-drive rows) is not an allowed source for the master.
+        if (!DbImportEnabled && _expectedQtyPerPanel.Count == 0) return null;
         int bpp = _config.PanelBoardsFor(model); if (bpp < 1) bpp = 1;
         var machines = new Dictionary<int, List<Pvs.Core.Feeders.MasterFeeder>>();
         var bad = new List<string>();
@@ -1892,6 +1898,8 @@ public sealed class SessionCoordinator : IDisposable
     /// the row-by-row preview only.</summary>
     public async Task<(bool Ok, string Message, IReadOnlyList<string> Changes)> ImportMasterFromDbAsync(string model, string side, Badge badge, bool apply, CancellationToken ct = default)
     {
+        // Danial 2026-09-25 "disable the DB import and refresh from DB": the DB feeder map (ProductBOM) never fills a block.
+        if (!DbImportEnabled) return (false, "DISABLED (Danial 2026-09-25): the Feeder Master is never filled from the DB. Import the machine's pen-drive CSV on master.html or add the feeders by hand.", Array.Empty<string>());
         if (!badge.CanReleaseInterlock) return (false, "Scan a SUPERVISOR badge (L2+) to import into the Feeder Master.", Array.Empty<string>());
         var products = await GetModelsAsync(ct);
         var product = products.FirstOrDefault(pr => string.Equals(pr.Name, model, StringComparison.OrdinalIgnoreCase));
@@ -2076,6 +2084,7 @@ public sealed class SessionCoordinator : IDisposable
     /// <summary>Clear ALL manual feeder overrides and go back to the DB ProductBOM. Supervisor only.</summary>
     public async Task<string> ClearManualFeedersAsync(Badge badge, CancellationToken ct = default)
     {
+        if (!DbImportEnabled) return "DISABLED (Danial 2026-09-25): the Feeder Master is never filled from the DB. Import the machine's pen-drive CSV on master.html or add the feeders by hand.";
         if (!badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to reload from the DB.";
         int had, skipped; Product? model; string side;
         lock (_gate)

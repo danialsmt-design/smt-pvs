@@ -301,7 +301,8 @@ FEEDER MASTER
 │
 ├─ MUST NOT  ✗ learn/adjust shots from exhausts   ✗ silently change a block   ✗ track a model with no block
 │            ✗ count from a cached list at start-up (no block = nothing tracked until the live read fills it)
-│            ✗ let a pen-drive file or the DB map feed the count-down directly (both are imports only)
+│            ✗ let a pen-drive file feed the count-down directly (import only)
+│            ✗ fill or refresh a block from the DB feeder map — DISABLED 2026-09-25 (pen-drive CSV import or hand edit only)
 │
 ├─ OUTPUT  master.html (dropdown model, tab per machine, opens on the running model) · /api/master · audits
 │

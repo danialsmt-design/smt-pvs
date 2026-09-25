@@ -56,8 +56,7 @@
       <label>Boards per panel <input id="bpp" class="num" type="number" min="1" max="20" oninput="recalc(true)"></label>
       <span id="status"></span>
       <span style="margin-left:auto" class="row">
-        <button onclick="importDb(false)" title="Show what the DB feeder map would change, row by row">Preview DB import</button>
-        <button onclick="importDb(true)" title="Replace this block with the DB feeder map (supervisor badge)">Import from DB</button>
+        <!-- DB import DISABLED (Danial 2026-09-25): blocks come from the pen-drive CSV import below or by hand -->
         <button class="pri" onclick="save()" title="Save this block as the master for the reel count-down (supervisor badge)">💾 Save (badge)</button>
       </span>
     </div>
