@@ -288,7 +288,8 @@ FEEDER MASTER
 │
 ├─ FILL  (a) supervisor edits on master.html (badge) — validated, versioned, history kept, audited FeederMasterSaved
 │        (b) "Import from DB" (badge): preview row-by-row diff → apply
-│        (c) AUTO: a model + side with no block yet gets the current list imported as UNREVIEWED (pen-drive counts
+│        (c) pen-drive CSV per machine on master.html or the ⚙ page → import into the block (badge, must divide by boards/panel)
+│        (d) AUTO: a model + side with no block yet gets the LIVE list imported as UNREVIEWED (pen-drive counts
 │            ÷ boards/panel, must divide — else flagged) so the line is never blind; shown as UNREVIEWED until saved
 │
 ├─ ACTION on save/import (running model)  rebuild list → re-baseline inventory → balance reconcile → StockOut sync
@@ -299,6 +300,8 @@ FEEDER MASTER
 │     • the previous version is kept (feeder-master-history.jsonl) — any save is reversible
 │
 ├─ MUST NOT  ✗ learn/adjust shots from exhausts   ✗ silently change a block   ✗ track a model with no block
+│            ✗ count from a cached list at start-up (no block = nothing tracked until the live read fills it)
+│            ✗ let a pen-drive file or the DB map feed the count-down directly (both are imports only)
 │
 ├─ OUTPUT  master.html (dropdown model, tab per machine, opens on the running model) · /api/master · audits
 │
@@ -461,4 +464,22 @@ MACHINE CONDITION  (per machine, latched from the R1 real-time stream)
 ├─ OUTPUT  per-machine {condition, since, lastBoardAgeSec} in /api/status + /api/health; a status bar on verify.html
 │
 └─ REVERSE  n/a (pure monitor). Post-restart shows UNKNOWN until the first R1 (persistence/D0-poll = follow-on).
+```
+
+
+## Lot-end count check (Danial 2026-09-25)
+
+```
+LOT SIZE is the truth: total boards produced in a lot MUST equal the lot size. The machine count is for
+reference and the parts-exhaust forecast. Panels made while PVS was down are lost to PVS's own count and
+M4 refuses the C1M read (A4E00), so the OPERATOR closes the gap near lot end.
+├─ WHEN     PVS count is within 10 boards of the lot size (or past it) and the check is not yet answered for this lot
+├─ POP-UP   operator screen (verify.html lotFlash): "COUNT CHECK — read M4 completed-PWB (panels), compare with PVS N panels"
+│           ├─ Matches  → badge → audit LotEndCheck "count matches"; pop-up gone for this lot
+│           ├─ Update   → machine panels + badge → capped adoption (never above lot size +10 %, never backwards)
+│           │            → audit AdoptCount + LotEndCheck "count updated a→b"; refused values keep PVS's count
+│           └─ Later    → snoozes 5 min on that screen only; the check stays due on the server
+├─ WHO      any registered badge answers (operators update the card near lot end); force stays supervisor-only (⚙ Set count)
+├─ PERSIST  answered lot + note in lot-progress.json (survives a restart); once per lot
+└─ MUST NOT ✗ auto-adopt from a serial counter to satisfy the check   ✗ dismiss without an answer   ✗ change the lot size
 ```

@@ -66,7 +66,11 @@
   </div>
 
   <div class="card">
-    <div class="tabs" id="tabs"></div>
+    <div class="row" style="justify-content:space-between">
+      <div class="tabs" id="tabs"></div>
+      <span class="row"><label class="hint">Pen-drive CSV for this machine <input type="file" id="csvFile" accept=".csv,.txt"></label>
+        <button onclick="importCsv(false)">Preview</button><button onclick="importCsv(true)">Import (badge)</button></span>
+    </div>
     <table id="grid"><thead><tr><th>Feeder</th><th>Part number</th><th class="n">Shots / board</th><th class="n">Shots / panel</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
       <tfoot><tr><td colspan="2" id="mcLabel">Machine total</td><td class="n" id="mcBoard">0</td><td class="n" id="mcPanel">0</td><td><button onclick="addRow()">+ feeder</button></td></tr></tfoot>
@@ -144,6 +148,14 @@ async function save(){
   const r = await api('/api/master/save', { badge, model: $('modelSel').value, side: $('sideSel').value, boardsPerPanel: +$('bpp').value, machines });
   $('msg').textContent = r.message || JSON.stringify(r);
   if(/saved/i.test(r.message||'')){ dirty = false; await load(); }
+}
+async function importCsv(apply){
+  const f = $('csvFile').files[0]; if(!f){ $('msg').textContent = 'Choose the machine\'s pen-drive CSV first.'; return; }
+  const csv = await f.text();
+  const badge = badgeOr(`${apply?'import':'preview'} the pen-drive list for MC${tab} into the Feeder Master ${$('modelSel').value} ${$('sideSel').value}`); if(!badge) return;
+  const r = await api('/api/master/import-csv', { badge, model: $('modelSel').value, side: $('sideSel').value, machine: tab, csv, apply });
+  $('msg').innerHTML = `<b>${r.message||''}</b>` + (r.changes && r.changes.length ? '<br>' + r.changes.slice(0,40).map(c=>'• '+c).join('<br>') : '');
+  if(apply && r.ok){ dirty = false; await load(); }
 }
 async function importDb(apply){
   const badge = badgeOr((apply?'IMPORT the DB feeder map into':'preview the DB feeder map against') + ` the Feeder Master for ${$('modelSel').value} ${$('sideSel').value}`); if(!badge) return;

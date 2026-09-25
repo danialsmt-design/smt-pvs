@@ -360,7 +360,14 @@ app.MapGet("/api/health", (LineService line) =>
                               lastWriteAt = co?.LastProductionWriteAt, lastWriteError = co?.LastProductionWriteError },
             perPanel = new { state = ppSig, model = modelName, boardsPerPanel = modelName is null ? (int?)null : line.Config.PanelBoardsFor(modelName),
                              detail = ppKnown ? null : $"no panelBoards entry for {modelName} — counting 1 board per panel" },
-            stockOut = new { state = soSig, lastOkAt = soOk, written = soWritten, tracked = soTracked, lastError = soErr }
+            stockOut = new { state = soSig, lastOkAt = soOk, written = soWritten, tracked = soTracked, lastError = soErr },
+            // FEEDER MASTER: the only count-down source. down = no block (nothing tracked); warn = block unreviewed.
+            feederMaster = new
+            {
+                state = (co?.MasterNote ?? "").Contains("NOT in") || (co?.MasterNote ?? "").Contains("nothing tracked") ? "down"
+                      : (co?.MasterNote ?? "").Contains("UNREVIEWED") ? "warn" : "ok",
+                note = co?.MasterNote
+            }
         }
     });
 });
@@ -1145,6 +1152,12 @@ app.MapPost("/api/master/save", async (LineService line, IReelPartRepository rep
     var block = new Pvs.Core.Feeders.MasterBlock(req.Model ?? "", (req.Side ?? "A").ToUpperInvariant(), req.BoardsPerPanel, machines, "edited", true, DateTime.Now, badge.Name, 0);
     return Results.Ok(new { message = await line.Coordinator!.SaveMasterBlockAsync(block, badge) });
 });
+app.MapPost("/api/master/import-csv", async (LineService line, IReelPartRepository repo, MasterCsvReq req) =>
+{
+    var badge = await repo.FindBadgeAsync(req.Badge ?? "") ?? new Pvs.Core.People.Badge("?", req.Badge ?? "", "");
+    var (ok, message, changes) = await line.Coordinator!.ImportMasterFromCsvAsync(req.Model ?? "", req.Side ?? "A", req.Machine, req.Csv ?? "", badge, req.Apply, req.Force);
+    return Results.Ok(new { ok, message, changes });
+});
 app.MapPost("/api/master/import", async (LineService line, IReelPartRepository repo, MasterImportReq req) =>
 {
     var badge = await repo.FindBadgeAsync(req.Badge ?? "") ?? new Pvs.Core.People.Badge("?", req.Badge ?? "", "");
@@ -1200,6 +1213,13 @@ app.MapPost("/api/lot/addqty", async (LineService line, LotAddReq req) =>
 // Lot component-usage verification (read-only): simulated usage (mount-points/board × lot board count) per feeder,
 // and whether each machine's board tally matches the lot count so the actual usage matches the simulation. Also
 // written to a lot-usage/<lot>.json file at lot completion. Empty when no lot is tracked.
+// LOT-END COUNT CHECK answer (operator screen pop-up): panels null = "matches"; else the machine counter (PANELS),
+// adopted through the capped path. Any registered badge (Danial 2026-09-25: operators update the card near lot end).
+app.MapPost("/api/lot/endcheck", async (LineService line, EndCheckReq req) =>
+{
+    if (line.Coordinator is null) return Results.Ok(new { message = "coordinator not ready" });
+    return Results.Ok(new { message = await line.Coordinator.LotEndCheckAsync(req.Badge, req.Panels) });
+});
 app.MapGet("/api/lot/usagecheck", (LineService line) => Results.Ok(line.Coordinator?.LotUsageCheck() ?? (object)new { lotNo = "" }));
 // Offline badge cache status/diagnostic: how many badges are cached locally + the last preload outcome. Also
 // forces a preload so the offline operator/supervisor auth is ready even right after a restart.
@@ -1866,6 +1886,7 @@ record ShutdownReq(string Password = "");
 record MasterRowReq(int Feeder, string? Part, int ShotsPerBoard);
 record MasterSaveReq(string? Badge, string? Model, string? Side, int BoardsPerPanel, Dictionary<string, List<MasterRowReq>>? Machines);
 record MasterImportReq(string? Badge, string? Model, string? Side, bool Apply = false);
+record MasterCsvReq(string? Badge, string? Model, string? Side, int Machine, string? Csv, bool Apply = false, bool Force = false);
 record MachineReq(int Machine);
 record InvAdjustReq(int Machine, int Feeder, int Quantity, string Badge);
 record ModelReq(int ProductId, string Side);
@@ -1875,6 +1896,7 @@ record ManualFeederReq(int Machine, string? Csv, string Badge = "", bool Force =
 record MachineSkipReq(int Machine, bool Skip, string Badge = "");
 record RestoreReelReq(string? Uid, string Badge = "");
 record AdoptReq(string Badge = "", int? Panels = null, int? Boards = null, bool Force = false);
+record EndCheckReq(string Badge = "", int? Panels = null);
 record MachineCountReq(int Machine, int Panels, string Badge = "");
 record SetupReq(bool? AutoC1z = null, bool? AutoC1m = null, string? TallySync = null);
 record ScanReq(string Value);

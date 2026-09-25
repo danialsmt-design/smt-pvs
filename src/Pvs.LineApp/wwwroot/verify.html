@@ -245,12 +245,20 @@
 <div id="lotFlash">
   <div class="lfmain"><span id="lfLeft">0</span> <span id="lfHead">boards to LOT END</span></div>
   <div class="lfsub">LOT ကုန်ခါနီး · Lot <span id="lfLot"></span> · <span id="lfProd"></span></div>
+  <div class="lfsub" style="font-size:min(3.6vw,26px);max-width:1100px">🔎 <b>COUNT CHECK</b> — read the machine counter (M4 completed PWB, <b>panels</b>) and compare with PVS <b><span id="lfPvsP">0</span> panels</b>.<br>
+    Same → <b>Matches</b>. Different → key the machine panels → <b>Update</b>. / စက်ကောင်တာ ဖတ်ပြီး PVS နှင့် တိုက်ပါ</div>
   <div class="lfadd">
+    <input id="lecPanels" type="number" min="0" placeholder="machine panels" inputmode="numeric">
+    <input id="lecBadge" type="text" placeholder="scan your badge / ကတ်ဖတ်ပါ" autocomplete="off">
+    <button onclick="lotEndCheck(true)">✅ Matches / ကိုက်</button>
+    <button onclick="lotEndCheck(false)">✏ Update count / ပြင်</button>
+  </div>
+  <div class="lfadd" style="margin-top:0">
     <span>Add extra qty / အပိုထည့်:</span>
     <input id="lotQty" type="number" min="1" placeholder="boards" inputmode="numeric">
     <input id="lotBadge" type="text" placeholder="scan supervisor / ကြီးကြပ်ကတ်">
-    <button onclick="addLotQty()">➕ Add / ထည့်</button>
-    <button class="sec" onclick="dismissLotFlash()">OK / ပိတ်</button>
+    <button class="sec" onclick="addLotQty()">➕ Add / ထည့်</button>
+    <button class="sec" onclick="dismissLotFlash()">Later (5 min) / နောက်မှ</button>
   </div>
   <div id="lotMsg"></div>
 </div>
@@ -890,7 +898,8 @@ function bigConfirmAction(){
 // ---- lot progress / end-of-lot ----
 // Dismissal is stored per-lot in localStorage so pressing OK STAYS dismissed across page reloads / kiosk
 // refreshes (a page var would re-show the alarm on every reload). A different lot re-arms automatically.
-function lotDismissedFor(lotNo){ return (localStorage.getItem('pvsLotDismissed')||'') === lotNo; }
+// "Later" only snoozes the count check for 5 minutes — it is answered on the server (once per lot), not dismissed.
+function lotDismissedFor(lotNo){ try{ const d=JSON.parse(localStorage.getItem('pvsLotSnooze')||'{}'); return d.lot===lotNo && (Date.now()-d.at)<5*60*1000; }catch(e){ return false; } }
 function updateLot(l){
   window._lot = l;
   const card=$('lotCard'), flash=$('lotFlash');
@@ -912,16 +921,35 @@ function updateLot(l){
     + `</div>`;
   $('lotCardBody').innerHTML = `<div class="lbl">🏁 Lot / လော့ ${l.lotNo}</div>` + stats
     + (done ? `<div class="unit" style="margin-top:8px">✅ lot complete / လော့ပြီး — set the next lot on ⚙ Model &amp; lot</div>` : '');
-  if(warn){
-    if(!lotDismissedFor(l.lotNo) && !typingLot){
+  // The pop-up is the LOT-END COUNT CHECK: it stays due (server-side, once per lot) until the operator answers it.
+  const ec = l.endCheck || {};
+  const typingCheck = document.activeElement && (document.activeElement.id==='lecPanels' || document.activeElement.id==='lecBadge');
+  if(ec.due || (warn && !l.endCheck)){
+    if(!lotDismissedFor(l.lotNo) && !typingLot && !typingCheck){
       $('lfLeft').textContent = Math.max(0,rem); $('lfLot').textContent = l.lotNo;
-      $('lfProd').textContent = `produced ${l.producedBoards} / target ${l.effectiveTarget}`;
-      $('lfHead').textContent = done ? 'LOT COMPLETE' : 'boards to LOT END';
+      $('lfProd').textContent = `PVS ${l.producedBoards} boards (${l.panels} panels) / lot size ${l.effectiveTarget}`;
+      $('lfPvsP').textContent = l.panels;
+      $('lfHead').textContent = done ? 'LOT COMPLETE — COUNT CHECK' : 'boards to LOT END — COUNT CHECK';
       flash.style.display='flex';
-    } else if(!typingLot) flash.style.display='none';
-  } else { flash.style.display='none'; }
+    } else if(!typingLot && !typingCheck) flash.style.display='none';
+  } else { if(!typingLot && !typingCheck) flash.style.display='none'; }
+  if(ec.done && ec.note){ const b=$('lotCardBody'); if(b) b.innerHTML += `<div class="unit" style="margin-top:6px">🔎 lot-end count check: ${ec.note}</div>`; }
 }
-function dismissLotFlash(){ const ln=(window._lot&&window._lot.lotNo)||''; if(ln) localStorage.setItem('pvsLotDismissed', ln); $('lotFlash').style.display='none'; }
+function dismissLotFlash(){ const ln=(window._lot&&window._lot.lotNo)||''; if(ln) localStorage.setItem('pvsLotSnooze', JSON.stringify({lot:ln, at:Date.now()})); $('lotFlash').style.display='none'; }
+// Operator answers the lot-end count check: matches (no panels) or the machine counter in PANELS (capped adoption).
+async function lotEndCheck(matches){
+  const b=$('lecBadge').value.trim(); const msg=$('lotMsg'); msg.style.color='var(--ok)';
+  if(!b){ msg.style.color='var(--red)'; msg.textContent='Scan your badge / ကတ်ဖတ်ပါ.'; $('lecBadge').focus(); return; }
+  let panels=null;
+  if(!matches){ panels=parseInt($('lecPanels').value||''); if(isNaN(panels)||panels<0){ msg.style.color='var(--red)'; msg.textContent='Key the machine counter (panels) / စက်ကောင်တာ ရိုက်ပါ.'; $('lecPanels').focus(); return; } }
+  msg.textContent='…';
+  try{
+    const r=await api('/api/lot/endcheck',{badge:b, panels:panels});
+    const bad=(r.message||'').toLowerCase().startsWith('refused')||(r.message||'').toLowerCase().startsWith('scan');
+    msg.style.color= bad?'var(--red)':'var(--ok)'; msg.textContent=r.message||'';
+    if(!bad){ $('lecPanels').value=''; $('lecBadge').value=''; setTimeout(()=>{ refresh(); }, 1200); }
+  }catch(e){ msg.style.color='var(--red)'; msg.textContent='Failed: '+e; }
+}
 async function addLotQty(){
   const q = parseInt($('lotQty').value||''); const b = $('lotBadge').value.trim();
   if(isNaN(q)||q<=0){ $('lotMsg').textContent='Enter a qty / အရေအတွက်ရိုက်ပါ.'; return; }

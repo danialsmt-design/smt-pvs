@@ -142,6 +142,13 @@ public sealed class SessionCoordinator : IDisposable
     private int? _lotTarget;              // PO target boards (from DeliveryDocuments)
     private int _lotExtra;                // supervisor-added extra boards (local only)
     private const int LotEndThreshold = 10;
+    // LOT-END COUNT CHECK (Danial 2026-09-25): "10 boards before the lot end check the lot size and the actual count
+    // match; if not pop up a message to update the board count." Panels made while PVS was down are lost to PVS's
+    // own count and M4 refuses the C1M read, so the OPERATOR reads the machine counter near lot end and either
+    // confirms PVS matches or keys the machine count (capped adoption). Answered once per lot; persisted.
+    private string _lotEndCheckLot = "";   // the lot whose end check has been answered
+    private string? _lotEndCheckNote;
+    private DateTime? _lotEndCheckAt;
     // Material coverage: pieces ISSUED (StockOuts) per part for the current lot/side — to warn when the issued
     // reels won't cover the whole lot (a re-request is needed, which has lead time). Refreshed on change + on a timer.
     private readonly Dictionary<string, int> _lotIssued = new(StringComparer.OrdinalIgnoreCase);
@@ -342,7 +349,7 @@ public sealed class SessionCoordinator : IDisposable
         return changed;
     }
 
-    private bool _masterFillTried;
+    private DateTime _masterFillLastTry;
     public async Task AutoDetectModelAsync(CancellationToken ct = default)
     {
         try { if (RecheckManualListsApply()) await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Manual-list applicability check failed."); }
@@ -352,9 +359,9 @@ public sealed class SessionCoordinator : IDisposable
         {
             Product? m; string side; bool need;
             lock (_gate) { m = Model; side = string.IsNullOrWhiteSpace(Side) ? "A" : Side; need = m is not null && _master.Get(m.Name, side) is null && _manualFeeders.Count == 0; }
-            if (need && !_masterFillTried && !NonCanon)
+            if (need && !NonCanon && (DateTime.Now - _masterFillLastTry) > TimeSpan.FromMinutes(2))
             {
-                _masterFillTried = true;
+                _masterFillLastTry = DateTime.Now;
                 _log.LogInformation("Feeder Master: no block for {Model} {Side} — reading the feeder list live to fill it.", m!.Name, side);
                 await SelectModelAsync(m.ProductId, side, ct);
             }
@@ -857,7 +864,8 @@ public sealed class SessionCoordinator : IDisposable
     }
 
     // ---- lot progress (boards produced vs PO target; end-of-lot alert) ----
-    private sealed record LotProgressData(string LotNo, int Panels, int Extra, int? Target, long? AnchorTotal = null, string? Side = null);
+    private sealed record LotProgressData(string LotNo, int Panels, int Extra, int? Target, long? AnchorTotal = null, string? Side = null,
+        string? EndCheckLot = null, string? EndCheckNote = null, DateTime? EndCheckAt = null);
     private static string LotProgressPath => System.IO.Path.Combine(AppContext.BaseDirectory, "lot-progress.json");
 
     // ---- per-machine tally OFFSETS (audit H6) ----------------------------------------------------------------
@@ -1133,7 +1141,7 @@ public sealed class SessionCoordinator : IDisposable
     private void SaveLotProgress()
     {
         LotProgressData d;
-        lock (_gate) d = new LotProgressData(_lotCountFor, LotPanels(), _lotExtra, _lotTarget, _lotAnchorTotal, _lotSideFor);
+        lock (_gate) d = new LotProgressData(_lotCountFor, LotPanels(), _lotExtra, _lotTarget, _lotAnchorTotal, _lotSideFor, _lotEndCheckLot, _lotEndCheckNote, _lotEndCheckAt);
         try { Pvs.Core.Persistence.AtomicFile.Write(LotProgressPath, System.Text.Json.JsonSerializer.Serialize(d)); }
         catch (Exception ex) { _log.LogDebug(ex, "Lot progress save failed."); }
     }
@@ -1146,6 +1154,7 @@ public sealed class SessionCoordinator : IDisposable
             var d = Pvs.Core.Persistence.AtomicFile.Load(LotProgressPath, __t => System.Text.Json.JsonSerializer.Deserialize<LotProgressData>(__t, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }));
             if (d is null) return;
             _lotCountFor = d.LotNo ?? ""; _lotExtra = d.Extra; _lotTarget = d.Target; _lotSideFor = d.Side ?? "";
+            _lotEndCheckLot = d.EndCheckLot ?? ""; _lotEndCheckNote = d.EndCheckNote; _lotEndCheckAt = d.EndCheckAt;
             // Prefer the persisted anchor; migrate an OLD file (no anchor) by back-computing it from its saved Panels.
             bool migrated = d.AnchorTotal is null;
             _lotAnchorTotal = d.AnchorTotal ?? (_m4PanelsTotal - d.Panels);
@@ -1564,9 +1573,58 @@ public sealed class SessionCoordinator : IDisposable
                 // INTEGRITY alarm: produced has passed the effective target. Surfaces an inflated count (e.g. a
                 // bad machine adoption) immediately on the floor instead of it landing silently in the DB.
                 overTarget = effTarget is int et && produced > et,
-                overBy = effTarget is int et2 ? Math.Max(0, produced - et2) : 0
+                overBy = effTarget is int et2 ? Math.Max(0, produced - et2) : 0,
+                // LOT-END COUNT CHECK: due once the lot is within LotEndThreshold boards of its size (or past it) until
+                // the operator answers it (count matches / count updated). Answered once per lot, persisted.
+                endCheck = new
+                {
+                    due = remaining is int r2 && r2 <= LotEndThreshold && _lotEndCheckLot != _lotCountFor,
+                    done = _lotEndCheckLot == _lotCountFor,
+                    at = _lotEndCheckLot == _lotCountFor ? _lotEndCheckAt : null,
+                    note = _lotEndCheckLot == _lotCountFor ? _lotEndCheckNote : null,
+                    thresholdBoards = LotEndThreshold,
+                    pvsPanels = lotPanels,
+                    pvsBoards = produced
+                }
             };
         }
+    }
+
+    /// <summary>
+    /// The operator answers the LOT-END COUNT CHECK (Danial 2026-09-25): with <paramref name="machinePanels"/> null the
+    /// machine counter MATCHES PVS's count; otherwise it is the machine's completed-PWB count (PANELS) and PVS adopts it
+    /// through the same capped path as the supervisor set-count (never above target +10%, never backwards). Any
+    /// registered badge may answer — the operator reads the counter and updates the card; the cap is the guard.
+    /// </summary>
+    public async Task<string> LotEndCheckAsync(string badgeUid, int? machinePanels, CancellationToken ct = default)
+    {
+        var badge = await _repo.FindBadgeAsync(badgeUid ?? "", ct);
+        if (badge is null) return "Scan your badge / ကတ်ဖတ်ပါ.";
+        string lot; int pvsPanels, pp, boards;
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(_currentLotNo) || _lotCountFor != _currentLotNo) return "No lot is running.";
+            lot = _currentLotNo; pvsPanels = LotPanels(); pp = Model is not null ? _config.PanelBoardsFor(Model.Name) : 1; boards = pvsPanels * pp;
+        }
+        string note;
+        if (machinePanels is null)
+        {
+            note = $"count matches: {pvsPanels}p / {boards}b confirmed by {badge.Name}";
+        }
+        else
+        {
+            int applied = AdoptLotCount(machinePanels.Value, "lot-end count check", badge.Name, enforceCap: true);
+            if (applied == -1) return "No lot is running.";
+            if (applied == -2) return $"Refused: {machinePanels} panels is over the lot target (or below PVS's {pvsPanels}p). Check the machine counter was reset for this lot; a supervisor can force it on the ⚙ Set count.";
+            note = applied == pvsPanels
+                ? $"count matches: {pvsPanels}p / {boards}b confirmed by {badge.Name}"
+                : $"count updated {pvsPanels}p -> {applied}p ({applied * pp}b) from the machine counter by {badge.Name}";
+        }
+        lock (_gate) { _lotEndCheckLot = lot; _lotEndCheckNote = note; _lotEndCheckAt = DateTime.Now; }
+        SaveLotProgress();
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "LotEndCheck", 0, 0, note, Supervisor: badge.Name,
+            Quantity: (machinePanels ?? pvsPanels) * pp, Overridden: false, Note: "10-boards-before-lot-end count check", LotNo: lot));
+        return machinePanels is null ? $"Lot {lot}: count confirmed ({boards} boards) by {badge.Name}." : $"Lot {lot}: {note}.";
     }
 
     /// <summary>Re-query the per-part ISSUED totals (StockOuts) for the current lot/side. Cheap query on a timer /
@@ -1737,7 +1795,16 @@ public sealed class SessionCoordinator : IDisposable
         {
             // NEVER import from a restored cache (its pen-drive counts carry no per-panel flag yet): wait for the
             // first LIVE list build (DB read or pen-drive rebuild), which knows the units.
-            if (!allowImport) { _masterNote = $"{model} {side}: not in the Feeder Master yet — waiting for the first live feeder-list read"; return; }
+            if (!allowImport)
+            {
+                // MASTER OR NOTHING (Danial 2026-09-25): never count from a cached list. Track nothing until the
+                // block is filled (the model tick reads the feeder list live and imports it, then the reels are
+                // re-derived from their load base — nothing is lost by the wait).
+                _expected.Clear(); _expectedQty.Clear(); _expectedQtyPerPanel.Clear();
+                _masterNote = $"{model} {side}: NOT in the Feeder Master — nothing tracked until it is filled (live read pending)";
+                _log.LogWarning("Feeder Master: {Note}", _masterNote);
+                return;
+            }
             block = ImportCurrentListLocked(model, side, "auto");
             if (block is null) { _masterNote = $"{model} {side}: NOT in the Feeder Master and nothing to import — no feeders tracked"; _log.LogWarning("Feeder Master: {Note}", _masterNote); return; }
             _log.LogWarning("Feeder Master: {Model} {Side} had no block — imported the current list ({N} feeders, source {Src}) as UNREVIEWED; a supervisor should review it on master.html.", model, side, block.FeederCount, block.Source);
@@ -1847,6 +1914,55 @@ public sealed class SessionCoordinator : IDisposable
         return (true, msg, diff);
     }
 
+    /// <summary>
+    /// Import ONE machine's pen-drive CSV into the master block for a model + side (Danial 2026-09-25: no source
+    /// other than the master may feed the count-down). The file's Mount Step / QTY is PER PANEL; it must divide by
+    /// the block's boards-per-panel to whole shots per board (force = round up, flagged). apply=false → preview.
+    /// </summary>
+    public async Task<(bool Ok, string Message, IReadOnlyList<string> Changes)> ImportMasterFromCsvAsync(
+        string model, string side, int machine, string csv, Badge badge, bool apply, bool force = false, CancellationToken ct = default)
+    {
+        if (!badge.CanReleaseInterlock) return (false, "Scan a SUPERVISOR badge (L2+) to import a pen-drive list into the Feeder Master.", Array.Empty<string>());
+        if (machine < 1 || machine > MaxMachine) return (false, $"Machine {machine} is out of range (1-{MaxMachine}).", Array.Empty<string>());
+        var entries = Pvs.Core.Feeders.SonyFeederCsv.Parse(csv, machine);
+        if (entries.Count == 0) return (false, "No feeders found in that file.", Array.Empty<string>());
+        int? declared = Pvs.Core.Feeders.SonyFeederCsv.DeclaredCell(csv);
+        if (declared is int fm && fm != machine && !force) return (false, $"CELL-MISMATCH: that file is for Cell {fm}, not Machine {machine}.", Array.Empty<string>());
+        int noQty = entries.Count(e => e.Qty <= 0);
+        if (noQty > 0) return (false, $"REJECTED: {noQty} of {entries.Count} rows have no placement count (Mount Step / QTY) — not the feeder-list format.", Array.Empty<string>());
+        string? runningProg = _channels.TryGetValue(machine, out var pch) ? pch.ProgramName : null;
+        string? fileLabel = Pvs.Core.Feeders.SonyFeederCsv.Comment(csv);
+        if (!force && !Pvs.Core.Runtime.ProgramNames.ManualListApplies(runningProg, fileLabel))
+            return (false, $"PROGRAM-MISMATCH: Machine {machine} is running '{runningProg}', that file is '{fileLabel}'. (Supervisor force to override.)", Array.Empty<string>());
+        side = (side ?? "A").ToUpperInvariant();
+        var current = _master.Get(model, side);
+        int bpp = current?.BoardsPerPanel ?? Math.Max(1, _config.PanelBoardsFor(model));
+        var rows = new List<Pvs.Core.Feeders.MasterFeeder>(); var bad = new List<string>();
+        foreach (var e in entries)
+        {
+            var shots = Pvs.Core.Feeders.FeederMasterRules.ShotsPerBoardFromPanelCount(e.Qty, bpp);
+            if (shots is null) { bad.Add($"F{e.Feeder} {e.Part}: {e.Qty}/panel does not divide by {bpp} boards/panel"); shots = Math.Max(1, (int)Math.Ceiling(e.Qty / (double)bpp)); }
+            rows.Add(new Pvs.Core.Feeders.MasterFeeder(e.Feeder, e.Part, shots.Value));
+        }
+        if (bad.Count > 0 && !force)
+            return (false, $"NOT IMPORTED: {bad.Count} count(s) do not divide by {bpp} boards/panel — you can't place half a component; is the panel factor right? " + string.Join("; ", bad.Take(6)), bad);
+        var machines = current is null
+            ? new Dictionary<int, List<Pvs.Core.Feeders.MasterFeeder>>()
+            : current.Machines.ToDictionary(kv => kv.Key, kv => kv.Value.ToList());
+        machines[machine] = rows;
+        var incoming = new Pvs.Core.Feeders.MasterBlock(model, side, bpp, machines, "pendrive", true, DateTime.Now, badge.Name, 0);
+        var errs = Pvs.Core.Feeders.FeederMasterRules.Validate(incoming);
+        if (errs.Count > 0) return (false, "NOT IMPORTED: " + string.Join("; ", errs), Array.Empty<string>());
+        var diff = Pvs.Core.Feeders.FeederMasterRules.Diff(current, incoming);
+        if (!apply) return (true, $"M{machine}: {rows.Count} feeders from '{fileLabel}' — {diff.Count} change(s), preview only.", diff);
+        lock (_gate) { _skippedMachines.Remove(machine); _manualFeeders.Remove(machine); _manualFeederLabels.Remove(machine); }
+        SaveManualFeeders();
+        var msg = await SaveMasterBlockAsync(incoming, badge, ct);
+        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualFeederLoad", rows.Count, 0, $"M{machine}: {fileLabel}",
+            Supervisor: badge.Name, Overridden: true, Note: $"pen-drive CSV imported into the Feeder Master {model} {side}" + (bad.Count > 0 ? $"; FORCED: {bad.Count} rounded" : ""), LotNo: _currentLotNo));
+        return (true, $"Machine {machine}: {rows.Count} feeders imported into the Feeder Master ({fileLabel}). {msg}", diff);
+    }
+
     private void RebuildExpectedFromManual()
     {
         _expected.Clear();
@@ -1913,48 +2029,13 @@ public sealed class SessionCoordinator : IDisposable
     /// Overrides the DB for that machine until Reload-from-DB.</summary>
     public async Task<string> LoadManualFeedersAsync(int machine, string csv, Badge badge, bool force = false, CancellationToken ct = default)
     {
-        if (!badge.CanReleaseInterlock) return "Scan a SUPERVISOR badge (L2+) to load a feeder list.";
-        if (machine < 1 || machine > MaxMachine) return $"Machine {machine} is out of range (1-{MaxMachine}).";
-        var entries = Pvs.Core.Feeders.SonyFeederCsv.Parse(csv, machine);
-        if (entries.Count == 0) return "No feeders found in that file.";
-        int? declared = Pvs.Core.Feeders.SonyFeederCsv.DeclaredCell(csv);
-        if (declared is int fm && fm != machine && !force)
-            return $"CELL-MISMATCH: that file is for Cell {fm}, not Machine {machine}.";
-        // PROGRAM-MISMATCH (Danial 2026-09-24): a pen-drive list is for the program the machine is RUNNING. If the
-        // machine reports a different model/side, the DB feeder map is the list — refuse unless the supervisor forces.
-        {
-            string? runningProg = _channels.TryGetValue(machine, out var pch) ? pch.ProgramName : null;
-            string? fileLabel = Pvs.Core.Feeders.SonyFeederCsv.Comment(csv);
-            if (!force && !Pvs.Core.Runtime.ProgramNames.ManualListApplies(runningProg, fileLabel))
-                return $"PROGRAM-MISMATCH: Machine {machine} is running '{runningProg}', that file is '{fileLabel}'. PVS keeps the DB feeder list for this machine. (Supervisor force to override.)";
-        }
-        // REJECT a file in a format that carries no placement count (Danial 2026-09-07: "reject the different format
-        // from the feeder list in the Parts Control PC"). The Sony export has it as Mount Step, the JUKI/Canon export
-        // as QTY; anything else would track every feeder at 1 per board. A supervisor may force it (audited), and the
-        // counts then come from the DB feeder map.
-        int noQty = entries.Count(e => e.Qty <= 0);
-        if (noQty > 0 && !force)
-            return $"REJECTED: {noQty} of {entries.Count} rows have no placement count (Mount Step / QTY column) — that is not the feeder-list format from the Parts Control PC. Load the correct feeder list; a supervisor may force this one (counts then come from the DB feeder map).";
-        var label = Pvs.Core.Feeders.SonyFeederCsv.Comment(csv) ?? $"file ({entries.Count})";
-        bool wasSkipped;
-        lock (_gate)
-        {
-            _manualFeeders[machine] = entries.ToList();
-            _manualFeederLabels[machine] = label;
-            wasSkipped = _skippedMachines.Remove(machine);   // loading a list puts the machine back in the run
-            RebuildExpectedFromManual();
-        }
-        SaveManualFeeders();
-        // The list changed → the live inventory must follow it NOW (it is only ever built in RefreshInventoryAsync);
-        // otherwise the old feeders keep decrementing / forecasting / syncing until the next baseline. (Audit H3)
-        try { await RefreshInventoryAsync(ct); } catch (Exception ex) { _log.LogDebug(ex, "Inventory refresh after manual feeder load failed."); }
-        string note = (declared is int d && d != machine ? $"pen-drive CSV (Cell {d} -> M{machine})" : "pen-drive CSV")
-                    + (noQty > 0 ? $"; FORCED with {noQty} row(s) lacking a placement count (DB feeder map used)" : "");
-        Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualFeederLoad", entries.Count, 0,
-            $"M{machine}: {label}", Supervisor: badge.Name, Overridden: true, Note: note, LotNo: _currentLotNo));
-        return $"Machine {machine}: loaded {entries.Count} feeders ({label})."
-             + (declared is int d2 && d2 != machine ? $" NOTE: file is Cell {d2}." : "")
-             + (wasSkipped ? " Machine is back in the line." : "");
+        // Danial 2026-09-25: no source other than the Feeder Master feeds the count-down. A pen-drive load is an
+        // IMPORT into the master block of the running model + side for that machine (badge, validated, versioned).
+        Product? model; string side;
+        lock (_gate) { model = Model; side = string.IsNullOrWhiteSpace(Side) ? "A" : Side; }
+        if (model is null) return "Select the running model first — the pen-drive list is imported into its Feeder Master block.";
+        var (ok, message, _) = await ImportMasterFromCsvAsync(model.Name, side, machine, csv, badge, apply: true, force: force, ct);
+        return message;
     }
 
     /// <summary>Highest machine number a supervisor may load or skip. Sony lines run 4 cells; the extra headroom
@@ -2004,12 +2085,12 @@ public sealed class SessionCoordinator : IDisposable
             model = Model; side = Side ?? "A";
         }
         SaveManualFeeders();
-        if (model is not null) await SelectModelAsync(model.ProductId, side, ct);   // rebuild _expected from DB
-        await RefreshInventoryAsync(ct);
+        if (model is null) return "Select the running model first.";
+        var (ok, message, _) = await ImportMasterFromDbAsync(model.Name, side, badge, apply: true, ct);   // DB map -> master block
         Audit(new VerificationRecord(DateTime.Now, _config.LineName, "ManualFeederClear", 0, 0,
-            $"cleared {had} override(s), {skipped} skip(s)", Supervisor: badge.Name, Overridden: true, Note: "reload from DB", LotNo: _currentLotNo));
-        return "Feeder lists reloaded from the DB ProductBOM"
-             + (skipped > 0 ? $"; {skipped} skipped machine(s) back in the line." : ".");
+            $"cleared {had} override(s), {skipped} skip(s)", Supervisor: badge.Name, Overridden: true, Note: "reload from DB into the Feeder Master: " + message, LotNo: _currentLotNo));
+        return (ok ? "Feeder Master reloaded from the DB feeder map. " + message : "Reload failed: " + message)
+             + (skipped > 0 ? $" {skipped} skipped machine(s) back in the line." : "");
     }
 
     /// <summary>Per-machine manual-feeder status for the ⚙ page (which machines are file-loaded, counts, total).
