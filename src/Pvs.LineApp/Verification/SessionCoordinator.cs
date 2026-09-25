@@ -805,7 +805,7 @@ public sealed class SessionCoordinator : IDisposable
                 _expected[(f.Machine, f.Feeder)] = f.Part;
                 if (f.QtyPerUnit > 0) _expectedQty[(f.Machine, f.Feeder)] = f.QtyPerUnit;
             }
-            try { ApplyMasterLocked("startup"); } catch (Exception ex) { _log.LogWarning(ex, "Feeder Master apply (startup) failed."); }
+            try { ApplyMasterLocked("startup", allowImport: false); } catch (Exception ex) { _log.LogWarning(ex, "Feeder Master apply (startup) failed."); }
             _log.LogInformation("Restored cached model {Model} ({Side}), {N} feeders — before serial/DB auto-detect.", data.Name, data.Side, _expected.Count);
         }
         catch (Exception ex) { _log.LogDebug(ex, "Model cache load failed."); }
@@ -1713,13 +1713,16 @@ public sealed class SessionCoordinator : IDisposable
     /// blind); a pen-drive count (per panel) is converted to shots per board and must divide exactly.
     /// Must be called under _gate.
     /// </summary>
-    private void ApplyMasterLocked(string reason)
+    private void ApplyMasterLocked(string reason, bool allowImport = true)
     {
         if (Model is null) return;
         string model = Model.Name, side = string.IsNullOrWhiteSpace(Side) ? "A" : Side;
         var block = _master.Get(model, side);
         if (block is null)
         {
+            // NEVER import from a restored cache (its pen-drive counts carry no per-panel flag yet): wait for the
+            // first LIVE list build (DB read or pen-drive rebuild), which knows the units.
+            if (!allowImport) { _masterNote = $"{model} {side}: not in the Feeder Master yet — waiting for the first live feeder-list read"; return; }
             block = ImportCurrentListLocked(model, side, "auto");
             if (block is null) { _masterNote = $"{model} {side}: NOT in the Feeder Master and nothing to import — no feeders tracked"; _log.LogWarning("Feeder Master: {Note}", _masterNote); return; }
             _log.LogWarning("Feeder Master: {Model} {Side} had no block — imported the current list ({N} feeders, source {Src}) as UNREVIEWED; a supervisor should review it on master.html.", model, side, block.FeederCount, block.Source);
