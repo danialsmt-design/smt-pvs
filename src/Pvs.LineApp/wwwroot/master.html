@@ -88,7 +88,7 @@ async function api(path, body){ const r = await fetch(path,{method:'POST',header
 async function load(){
   master = await (await fetch('/api/master')).json();
   current = { model: master.current.model, side: (master.current.side||'A').toUpperCase() };
-  const names = [...new Set(master.blocks.map(b=>b.Model))];
+  const names = [...new Set(master.blocks.map(b=>b.model))];
   if(current.model && !names.includes(current.model)) names.unshift(current.model);
   try { const st = await (await fetch('/api/status')).json(); $('lineName').textContent = st.line || ''; } catch(e){}
   $('modelSel').innerHTML = names.map(n=>`<option ${n===current.model?'selected':''}>${n}</option>`).join('');
@@ -100,16 +100,16 @@ async function pickModel(){
   const model = $('modelSel').value, side = $('sideSel').value;
   const b = await (await fetch(`/api/master/block?model=${encodeURIComponent(model)}&side=${side}`)).json();
   if(!b.found){
-    block = { Model: model, Side: side, BoardsPerPanel: 4, machines: [1,2,3,4].map(m=>({machine:m, feeders:[]})), Reviewed:false, Source:'new', Version:0 };
+    block = { model: model, side: side, boardsPerPanel: 4, machines: [1,2,3,4].map(m=>({machine:m, feeders:[]})), reviewed:false, source:'new', version:0 };
     $('status').innerHTML = '<span class="pill bad">NOT IN MASTER</span> <span class="hint">this model/side has no block — fill it or import from DB</span>';
   } else {
     block = b;
     const inForce = (model===current.model && side===current.side);
-    $('status').innerHTML = (b.Reviewed ? '<span class="pill ok">REVIEWED</span>' : '<span class="pill warn">UNREVIEWED — imported from '+b.Source+'</span>')
+    $('status').innerHTML = (b.reviewed ? '<span class="pill ok">REVIEWED</span>' : '<span class="pill warn">UNREVIEWED — imported from '+b.source+'</span>')
       + (inForce ? ' <span class="pill ok">IN FORCE (running model)</span>' : '')
-      + ` <span class="hint">v${b.Version} · ${b.UpdatedBy||''} · ${b.UpdatedAt? new Date(b.UpdatedAt).toLocaleString():''}</span>`;
+      + ` <span class="hint">v${b.version} · ${b.updatedBy||''} · ${b.updatedAt? new Date(b.updatedAt).toLocaleString():''}</span>`;
   }
-  $('bpp').value = block.BoardsPerPanel;
+  $('bpp').value = block.boardsPerPanel;
   dirty = false; tab = 1; render();
 }
 function render(){
@@ -117,10 +117,10 @@ function render(){
   $('tabs').innerHTML = block.machines.map(m=>`<div class="tab ${m.machine===tab?'on':''}" onclick="tab=${m.machine};render()">MC${m.machine}<span class="tot">${m.feeders.length} feeders · ${sumB(m)}/board</span></div>`).join('');
   const m = block.machines.find(x=>x.machine===tab);
   $('rows').innerHTML = m.feeders.map((f,i)=>`<tr>
-    <td><input class="num" type="number" min="1" value="${f.Feeder}" oninput="setF(${i},'Feeder',this.value)"></td>
-    <td><input class="part" value="${f.Part||''}" oninput="setF(${i},'Part',this.value)"></td>
-    <td class="n"><input class="num" type="number" min="1" step="1" value="${f.ShotsPerBoard}" oninput="setF(${i},'ShotsPerBoard',this.value)"></td>
-    <td class="n">${(+f.ShotsPerBoard||0)*bpp}</td>
+    <td><input class="num" type="number" min="1" value="${f.feeder}" oninput="setF(${i},'feeder',this.value)"></td>
+    <td><input class="part" value="${f.part||''}" oninput="setF(${i},'part',this.value)"></td>
+    <td class="n"><input class="num" type="number" min="1" step="1" value="${f.shotsPerBoard}" oninput="setF(${i},'shotsPerBoard',this.value)"></td>
+    <td class="n">${(+f.shotsPerBoard||0)*bpp}</td>
     <td><button class="danger" onclick="delRow(${i})" title="remove feeder">✕</button></td></tr>`).join('');
   $('mcLabel').textContent = `MC${tab} total (${m.feeders.length} feeders)`;
   $('mcBoard').textContent = sumB(m); $('mcPanel').textContent = sumB(m)*bpp;
@@ -129,18 +129,18 @@ function render(){
   $('tlb').textContent = lb; $('tlp').textContent = lb*bpp;
   document.querySelectorAll('.kpi').forEach(k=>k.classList.toggle('dirty', dirty));
 }
-function sumB(m){ return m.feeders.reduce((a,f)=>a+(parseInt(f.ShotsPerBoard)||0),0); }
-function setF(i,k,v){ const m = block.machines.find(x=>x.machine===tab); m.feeders[i][k] = (k==='Part')? v.toUpperCase() : parseInt(v)||0; dirty = true; render(); }
-function addRow(){ const m = block.machines.find(x=>x.machine===tab); m.feeders.push({Feeder: (m.feeders.length? Math.max(...m.feeders.map(f=>+f.Feeder))+1 : 101), Part:'', ShotsPerBoard:1}); dirty = true; render(); }
+function sumB(m){ return m.feeders.reduce((a,f)=>a+(parseInt(f.shotsPerBoard)||0),0); }
+function setF(i,k,v){ const m = block.machines.find(x=>x.machine===tab); m.feeders[i][k] = (k==='part')? v.toUpperCase() : parseInt(v)||0; dirty = true; render(); }
+function addRow(){ const m = block.machines.find(x=>x.machine===tab); m.feeders.push({feeder: (m.feeders.length? Math.max(...m.feeders.map(f=>+f.feeder))+1 : 101), part:'', shotsPerBoard:1}); dirty = true; render(); }
 function delRow(i){ const m = block.machines.find(x=>x.machine===tab); m.feeders.splice(i,1); dirty = true; render(); }
 function recalc(markDirty){ if(markDirty) dirty = true; render(); }
 function badgeOr(msg){ const b = prompt('SUPERVISOR: scan your badge to ' + msg); return b && b.trim() ? b.trim() : null; }
 async function save(){
   const bad = [];
-  for(const m of block.machines) for(const f of m.feeders){ if(!(+f.ShotsPerBoard>=1) || (+f.ShotsPerBoard)%1!==0) bad.push(`MC${m.machine} F${f.Feeder}`); if(!f.Part) bad.push(`MC${m.machine} F${f.Feeder} part`); }
+  for(const m of block.machines) for(const f of m.feeders){ if(!(+f.shotsPerBoard>=1) || (+f.shotsPerBoard)%1!==0) bad.push(`MC${m.machine} F${f.feeder}`); if(!f.part) bad.push(`MC${m.machine} F${f.feeder} part`); }
   if(bad.length){ $('msg').innerHTML = '<span class="pill bad">NOT SAVED</span> whole-number shots ≥ 1 and a part are required: ' + bad.slice(0,6).join(', '); return; }
   const badge = badgeOr(`save the Feeder Master for ${$('modelSel').value} ${$('sideSel').value}`); if(!badge) return;
-  const machines = {}; for(const m of block.machines) machines[m.machine] = m.feeders.map(f=>({feeder:+f.Feeder, part:f.Part, shotsPerBoard:+f.ShotsPerBoard}));
+  const machines = {}; for(const m of block.machines) machines[m.machine] = m.feeders.map(f=>({feeder:+f.feeder, part:f.part, shotsPerBoard:+f.shotsPerBoard}));
   const r = await api('/api/master/save', { badge, model: $('modelSel').value, side: $('sideSel').value, boardsPerPanel: +$('bpp').value, machines });
   $('msg').textContent = r.message || JSON.stringify(r);
   if(/saved/i.test(r.message||'')){ dirty = false; await load(); }
